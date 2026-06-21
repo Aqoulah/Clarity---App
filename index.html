@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#463c91" />
+    <title>Clarity Schedule</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css?v=42" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <a class="brand" href="#" data-view="dashboard" aria-label="Clarity Schedule home">
+          <span class="brand-mark">
+            <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4h16a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4Z"/><path d="M10 11h12M10 16h7M10 21h10"/></svg>
+          </span>
+          <span><b>Clarity</b><small>Schedule</small></span>
+        </a>
+
+        <div class="portal-switch" role="group" aria-label="Portal">
+          <button class="portal-option active" data-portal="chief" onclick="switchPortal('chief', this)">Chief</button>
+          <button class="portal-option" data-portal="resident" onclick="switchPortal('resident', this)">Resident</button>
+        </div>
+
+        <nav class="main-nav" aria-label="Main navigation">
+          <p class="nav-label">Workspace</p>
+          <button class="nav-item active" data-view="dashboard">
+            <span class="icon" data-icon="home"></span><span>Overview</span>
+          </button>
+          <button class="nav-item" data-view="builder">
+            <span class="icon" data-icon="wand"></span><span>Schedule builder</span>
+            <span class="nav-badge">3</span>
+          </button>
+          <button class="nav-item" data-view="schedule">
+            <span class="icon" data-icon="calendar"></span><span>Schedules</span>
+          </button>
+          <button class="nav-item" data-view="analytics">
+            <span class="icon" data-icon="chart"></span><span>Analytics</span>
+          </button>
+          <button class="nav-item" data-view="master">
+            <span class="icon" data-icon="grid"></span><span>Master schedule</span>
+          </button>
+          <button class="nav-item" data-view="attendance">
+            <span class="icon" data-icon="clipboard"></span><span>Attendance</span>
+            <span class="nav-badge">Live</span>
+          </button>
+          <p class="nav-label">People & rules</p>
+          <button class="nav-item" data-view="residents">
+            <span class="icon" data-icon="users"></span><span>Residents</span>
+          </button>
+          <button class="nav-item" data-view="rules">
+            <span class="icon" data-icon="settings"></span><span>Rules & institutions</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-support">
+          <div class="support-orb"><span class="icon" data-icon="spark"></span></div>
+          <strong>Need a hand?</strong>
+          <p>Review schedule guidance and common rules.</p>
+          <button class="text-button">Open help center</button>
+        </div>
+
+        <div class="sidebar-user">
+          <div class="avatar avatar-chief">EM</div>
+          <div><strong>Dr. Elena Morgan</strong><span>Chief administrator</span></div>
+          <button class="icon-button" aria-label="More account options"><span class="icon" data-icon="more"></span></button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <button class="mobile-menu icon-button" id="mobile-menu" aria-label="Open navigation"><span class="icon" data-icon="menu"></span></button>
+          <div class="search-box">
+            <span class="icon" data-icon="search"></span>
+            <input type="search" placeholder="Search residents, schedules, or rules..." aria-label="Search" />
+            <kbd>⌘ K</kbd>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button notification-button" aria-label="Notifications">
+              <span class="icon" data-icon="bell"></span><i></i>
+            </button>
+            <button class="primary-button compact" data-view-target="builder">
+              <span class="icon" data-icon="plus"></span> New block
+            </button>
+          </div>
+        </header>
+
+        <div id="app"></div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button class="modal-close icon-button" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+        <div class="modal-icon"><span class="icon" data-icon="spark"></span></div>
+        <h2 id="modal-title">Generate all configured schedules?</h2>
+        <p>Clarity will apply your staffing rules, resident requests, protected dates, and fairness targets across Block 13.</p>
+        <div class="generation-summary">
+          <div><strong>54</strong><span>Residents</span></div>
+          <div><strong>30</strong><span>Days</span></div>
+          <div><strong id="modal-schedule-count">9</strong><span>Schedules</span></div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button modal-cancel">Not yet</button>
+          <button class="primary-button modal-confirm"><span class="icon" data-icon="wand"></span> Generate schedules</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="delete-service-modal" hidden>
+      <div class="modal delete-service-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-service-title">
+        <button class="delete-service-close icon-button" aria-label="Close"><span class="icon" data-icon="close"></span></button>
+        <div class="modal-icon danger"><span class="icon" data-icon="alert"></span></div>
+        <h2 id="delete-service-title">Delete this service?</h2>
+        <p><strong id="delete-service-name">This service</strong> will be removed from every block, including its rules, coverage teams, shift settings, and draft schedules.</p>
+        <div class="delete-warning">This cannot be undone in the current prototype.</div>
+        <div class="modal-actions">
+          <button class="secondary-button delete-service-cancel">Keep service</button>
+          <button class="danger-button delete-service-confirm">Delete service</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <span class="toast-icon icon" data-icon="check"></span>
+      <div><strong>Schedule updated</strong><span>Your changes were saved.</span></div>
+    </div>
+
+    <script src="demo-workbook-data.js?v=2"></script>
+    <script src="app.js?v=43"></script>
+  </body>
+</html>
