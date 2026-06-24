@@ -186,6 +186,6 @@ createServer(async (request, response) => {
     response.writeHead(404);
     response.end("Not found");
   }
-}).listen(port, "127.0.0.1", () => {
-  console.log(`Schedule hub running at http://127.0.0.1:${port}`);
+}).listen(port, "0.0.0.0", () => {
+  console.log(`Schedule hub running at http://0.0.0.0:${port}`);
 });
