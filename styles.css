@@ -1947,6 +1947,50 @@ h3 { font-size: 13px; }
 .editable-resident-cell em { color: #6b7280; display: block; font-size: 9px; font-style: normal; margin-top: 2px; }
 .resident-cell .avatar { border: 2px solid rgba(255,255,255,.85); }
 
+/* ── Annual workbook nav ───────────────────────────────── */
+.annual-workbook-nav { border-bottom: 1px solid var(--line); display: flex; gap: 2px; margin-bottom: 20px; overflow-x: auto; }
+.annual-workbook-tab { align-items: center; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; display: inline-flex; font-size: 12px; gap: 10px; margin-bottom: -1px; padding: 10px 16px; transition: color .15s; white-space: nowrap; }
+.annual-workbook-tab .icon { flex: 0 0 auto; height: 18px; width: 18px; }
+.annual-workbook-tab span > strong { color: inherit; display: block; font-size: 12px; font-weight: 600; }
+.annual-workbook-tab span > small { color: var(--subtle); display: block; font-size: 10px; margin-top: 1px; }
+.annual-workbook-tab:hover { color: var(--primary); }
+.annual-workbook-tab.active { border-bottom-color: var(--primary); color: var(--primary); }
+
+/* ── Master import gateway ─────────────────────────────── */
+.master-import-gateway { margin-bottom: 20px; }
+.master-import-hero { align-items: center; background: linear-gradient(135deg, #eef1fb 0%, #f5f3fe 100%); border: 2px solid var(--primary); border-radius: 16px; display: flex; gap: 20px; padding: 24px 28px; }
+.master-import-hero-icon { align-items: center; background: var(--primary); border-radius: 14px; color: #fff; display: flex; flex: 0 0 52px; height: 52px; justify-content: center; width: 52px; }
+.master-import-hero-icon .icon { height: 24px; width: 24px; }
+.master-import-hero-text { flex: 1; }
+.master-import-hero-text h3 { color: #1a1a2e; font-size: 16px; font-weight: 700; margin: 0 0 5px; }
+.master-import-hero-text p { color: var(--subtle); font-size: 12px; line-height: 1.5; margin: 0; }
+.master-build-secondary { align-items: center; color: var(--muted); display: flex; font-size: 12px; gap: 8px; margin-top: 14px; padding: 0 2px; }
+.master-import-status { background: #f3f4f8; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 12px 16px; }
+.master-import-status.applied { background: var(--teal-soft); border-color: #9de0d8; color: var(--teal); }
+.master-import-status.staged { background: var(--amber-soft); border-color: #f5d68a; color: #a36b18; }
+.master-import-status small { font-size: 9px; font-weight: 700; opacity: .7; text-transform: uppercase; }
+.master-import-status strong { font-size: 13px; font-weight: 700; }
+.master-import-status span { font-size: 11px; opacity: .8; }
+.master-import-panel { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 20px; }
+.import-dropzone { align-items: center; background: #f8f9fe; border: 2px dashed #bfc5e8; border-radius: 12px; display: flex; gap: 18px; padding: 22px 24px; }
+.import-dropzone .metric-icon { flex: 0 0 auto; }
+.import-dropzone > div { flex: 1; }
+.import-dropzone h3 { color: #1a1a2e; font-size: 14px; font-weight: 700; margin: 0 0 4px; }
+.import-dropzone p { color: var(--subtle); font-size: 11px; line-height: 1.6; margin: 0; }
+.import-file-row { align-items: stretch; border: 1px solid var(--line); border-radius: 10px; display: flex; margin-top: 14px; overflow: hidden; }
+.import-file-row span { border-right: 1px solid var(--line); flex: 1; padding: 10px 14px; }
+.import-file-row span:last-child { border-right: 0; }
+.import-file-row small { color: var(--subtle); display: block; font-size: 9px; text-transform: uppercase; }
+.import-file-row strong { display: block; font-size: 12px; font-weight: 600; margin-top: 3px; }
+.import-mapping-grid { display: grid; gap: 12px; grid-template-columns: repeat(4,1fr); margin-top: 16px; }
+.import-mapping-grid article { background: #fafbfc; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.import-mapping-grid small { color: var(--subtle); display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.import-mapping-grid strong { display: block; font-size: 15px; font-weight: 700; margin-top: 5px; }
+.import-mapping-grid span { color: var(--subtle); display: block; font-size: 10px; margin-top: 3px; }
+.import-link-flow { align-items: center; background: #f7f8fc; border-radius: 8px; color: var(--subtle); display: flex; flex-wrap: wrap; font-size: 11px; gap: 6px; margin-top: 16px; padding: 12px 16px; }
+.import-link-flow em { color: var(--primary); font-style: normal; font-weight: 700; }
+.import-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+
 /* ── Excel-style view ──────────────────────────────────── */
 .excel-schedule-mirror { padding: 16px 20px; }
 .excel-view-note { align-items: center; background: #f7f8fc; border: 1px solid var(--line); border-radius: 12px; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 16px; padding: 14px 18px; }

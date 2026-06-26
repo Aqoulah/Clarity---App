@@ -25,7 +25,7 @@ const iconPaths = {
 function hydrateIcons(root = document) {
   root.querySelectorAll("[data-icon]").forEach((node) => {
     const name = node.dataset.icon;
-    node.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || ""}</svg>`;
+    node.innerHTML = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || ""}</svg>`;
   });
 }
 
@@ -4114,7 +4114,7 @@ function masterView() {
   const coverageSummary = pgyCoverageSummary(activeMasterPgy);
   const requirementCompletion = Math.round(visibleRows.reduce((sum, { resident, row }) => {
     const completed = Object.entries(resident.requirements).filter(([rotation, required]) => masterAssignments[row].filter((item) => item.rotation === rotation).length >= required).length;
-    return sum + completed / Object.keys(resident.requirements).length;
+    return sum + completed / (Object.keys(resident.requirements).length || 1);
   }, 0) / Math.max(1, visibleRows.length) * 100);
   return `<section class="page master-page">
     <div class="page-head">
@@ -4168,26 +4168,25 @@ function masterImportStatusCopy() {
 function masterImportGateway() {
   const [statusTitle, statusCopy] = masterImportStatusCopy();
   const importActive = masterImportState.mode === "import";
-  const buildActive = masterImportState.mode !== "import";
   const fileLabel = masterImportState.fileName ? escapeHtml(masterImportState.fileName) : "No file selected";
   return `<section class="panel master-import-gateway">
-    <div class="master-source-options">
-      <button class="master-source-card ${buildActive ? "active" : ""}" data-master-import-mode="build">
-        <span class="metric-icon teal"><span class="icon" data-icon="users"></span></span>
-        <strong>Build from resident requests</strong>
-        <small>Use annual rankings, PTO, fellowship timing, and chief review to build the master step by step.</small>
-      </button>
-      <button class="master-source-card ${importActive ? "active" : ""}" data-master-import-mode="import">
-        <span class="metric-icon purple"><span class="icon" data-icon="clipboard"></span></span>
-        <strong>Import completed master</strong>
-        <small>Upload the Excel/PDF chiefs already built, then map residents, blocks, and rotations into Clarity.</small>
-      </button>
-      <article class="master-import-status ${masterImportState.status}">
-        <small>Current source</small>
-        <strong>${statusTitle}</strong>
-        <span>${statusCopy}</span>
-      </article>
+    <div class="master-import-hero">
+      <div class="master-import-hero-icon"><span class="icon" data-icon="clipboard"></span></div>
+      <div class="master-import-hero-text">
+        <h3>Import Master Schedule</h3>
+        <p>Upload your existing Excel or CSV master schedule to automatically map residents, blocks, and rotations into Clarity.</p>
+      </div>
+      <button class="primary-button${importActive ? " active" : ""}" data-master-import-mode="import"><span class="icon" data-icon="clipboard"></span> Import existing master</button>
     </div>
+    <div class="master-build-secondary">
+      <span>Starting fresh instead?</span>
+      <button class="link-button" data-master-import-mode="build">Build from resident requests</button>
+    </div>
+    <article class="master-import-status ${masterImportState.status}">
+      <small>Current source</small>
+      <strong>${statusTitle}</strong>
+      <span>${statusCopy}</span>
+    </article>
     ${importActive ? `<div class="master-import-panel">
       <input class="master-import-file" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden>
       <div class="import-dropzone">
@@ -5136,7 +5135,7 @@ function getResidentConflictCount(row) {
 }
 function getResidentRequirementScore(row) {
   const requirements = masterResidents[row].requirements;
-  return Math.round(Object.entries(requirements).reduce((sum,[rotation,required])=>sum+Math.min(1,masterAssignments[row].filter(item=>item.rotation===rotation).length/required),0)/Object.keys(requirements).length*100);
+  return Math.round(Object.entries(requirements).reduce((sum,[rotation,required])=>sum+Math.min(1,masterAssignments[row].filter(item=>item.rotation===rotation).length/required),0)/(Object.keys(requirements).length||1)*100);
 }
 function getMasterConflicts() {
   const conflicts = [...pgyCoverageConflicts(activeMasterPgy)];
