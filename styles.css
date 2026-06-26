@@ -640,11 +640,11 @@ h3 { font-size: 13px; }
 .schedule-workspace { display: grid; grid-template-columns: minmax(760px, 1fr) 255px; }
 .schedule-sheet-wrap { background: #fff; border: 1px solid var(--line); border-top: 0; overflow-x: auto; }
 .schedule-sheet { min-width: 840px; }
-.sheet-row { border-bottom: 1px solid #ececf1; display: grid; grid-template-columns: 180px repeat(7, minmax(90px, 1fr)); min-height: 68px; }
+.sheet-row { border-bottom: 1px solid #ececf1; display: grid; grid-template-columns: 180px repeat(28, 82px); min-height: 68px; }
 .sheet-row > div, .sheet-row > button { border-right: 1px solid #ececf1; }
 .sheet-row > :last-child { border-right: 0; }
 .sheet-header { background: #f8f8fb; min-height: 57px; position: sticky; top: 0; z-index: 2; }
-.resident-cell { align-items: center; display: flex; gap: 9px; padding: 10px 12px; }
+.resident-cell { align-items: center; display: flex; gap: 9px; padding: 10px 12px; position: sticky; left: 0; z-index: 3; background: #fff; }
 .resident-cell strong, .resident-cell small { display: block; }
 .resident-cell strong { font-size: 10px; }
 .resident-cell small { color: var(--subtle); font-size: 8px; margin-top: 2px; }

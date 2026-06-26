@@ -1743,10 +1743,10 @@ function scheduleView() {
     activeScheduleService = services[0] || "";
     loadActiveScheduleDraft();
   }
-  const weekStart = selectedScheduleWeek * 7;
-  const days = Array.from({ length: 7 }, (_, index) => {
+  const weekStart = 0;
+  const days = Array.from({ length: 28 }, (_, index) => {
     const date = weekStart + index + 1;
-    return [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][index], `Jun ${date}`, date];
+    return [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][index % 7], `Jun ${date}`, date];
   });
   const templateRange = (code, fallback) => {
     const template = getServiceShiftTemplate(activeScheduleService, code);
@@ -1754,7 +1754,7 @@ function scheduleView() {
   };
   const scheduleRows = scheduleDraft.map((resident) => ({
     ...resident,
-    shifts: resident.shifts.slice(weekStart, weekStart + 7).map((entry) => ({ ...entry, value: ({
+    shifts: resident.shifts.slice(weekStart, weekStart + 28).map((entry) => ({ ...entry, value: ({
       "1700–0700": templateRange("NIGHT", entry.value),
       "1815–0700": templateRange("WKND-N", entry.value),
       "0630–1700": templateRange("DAY", entry.value),
@@ -1796,7 +1796,7 @@ function scheduleView() {
       ${services.map((service) => `<button class="service-tab ${service === activeScheduleService ? "active" : ""}" data-service="${service}">${service}${service === "NICU" ? '<i>1</i>' : ""}</button>`).join("")}
     </div>
     <div class="schedule-controls">
-      <div class="control-group"><button class="secondary-button compact"><span class="icon" data-icon="filter"></span> Filter</button><div class="select-wrap"><select class="filter-select schedule-week-select">${[1,2,3,4].map(week=>`<option value="${week-1}" ${selectedScheduleWeek===week-1?"selected":""}>Week ${week} · Jun ${(week-1)*7+1}-${week*7}</option>`).join("")}</select></div><button class="secondary-button compact">Today</button><button class="primary-button compact open-add-resident"><span class="icon" data-icon="plus"></span> Add resident</button></div>
+      <div class="control-group"><button class="secondary-button compact"><span class="icon" data-icon="filter"></span> Filter</button><span class="block-range-pill">Full block · 28 days</span><button class="secondary-button compact">Today</button><button class="primary-button compact open-add-resident"><span class="icon" data-icon="plus"></span> Add resident</button></div>
       <div class="legend"><span><i class="legend-dot day"></i>Day</span><span><i class="legend-dot night"></i>Night</span><span><i class="legend-dot protected"></i>Protected</span><span><i class="legend-dot off"></i>Off</span></div>
       <div class="control-group"><div class="schedule-layout-toggle" role="group" aria-label="Schedule view"><button class="${activeScheduleLayout==="builder"?"active":""}" data-schedule-layout="builder">Builder view</button><button class="${activeScheduleLayout==="excel"?"active":""}" data-schedule-layout="excel">Excel-style</button></div><button class="secondary-button compact undo-button" ${scheduleUndoStack.length ? "" : "disabled"}>Undo</button><button class="secondary-button compact redo-button" ${scheduleRedoStack.length ? "" : "disabled"}>Redo</button></div>
     </div>
