@@ -2188,21 +2188,1360 @@ function validateFloorDraft(draft, service, block) {
 // Rename the existing generateServiceDraft to generateServiceDraftGeneric,
 // then replace calls to generateServiceDraft with generateServiceDraft (below).
 
-// Store a reference to the old generic generator BEFORE overwriting
-const generateServiceDraftGeneric = generateServiceDraft;
+
+// ── All remaining service engines + complete router ───────────────────────
+// ============================================================
+// CLARITY SCHEDULE — All Remaining Service Engines
+// Gold, Newborn, Heme/Onc, NICU, PICU,
+// Senior Night Shift, Floor Senior Linkage, Call Pool/Jeopardy
+// ============================================================
+
+// ══════════════════════════════════════════════════════════════
+// SHARED UTILITIES (used by multiple engines below)
+// ══════════════════════════════════════════════════════════════
 
 /**
- * New generateServiceDraft — routes Purple/Orange to the real engine,
- * all other services to the existing generic engine.
+ * Returns approved requests for a resident in a block.
+ * Only approved requests are hard constraints.
+ * Pending requests return as soft warnings only.
  */
+function getApprovedRequests(residentName, blockNumber) {
+  return residentRequests.filter(
+    (r) => r.resident === residentName &&
+            r.block === blockNumber &&
+            r.status === "approved"
+  );
+}
+
+function getPendingRequests(residentName, blockNumber) {
+  return residentRequests.filter(
+    (r) => r.resident === residentName &&
+            r.block === blockNumber &&
+            r.status === "pending"
+  );
+}
+
+/**
+ * Returns true if this resident has an approved leave/PTO/vacation
+ * request during the given block.
+ */
+function hasApprovedLeave(residentName, blockNumber) {
+  return residentRequests.some(
+    (r) => r.resident === residentName &&
+            r.block === blockNumber &&
+            r.status === "approved" &&
+            /vacation|pto|leave|sick/i.test(r.type)
+  );
+}
+
+/**
+ * Checks whether a resident's prior block or next block rotation
+ * is inpatient — used for transition safety warnings.
+ */
+function getAdjacentRotations(residentName, block) {
+  const idx = residentMasterIndex(residentName);
+  const prev = block >= 2 ? (masterAssignments[idx]?.[block - 2]?.rotation || "") : "";
+  const next = block <= 12 ? (masterAssignments[idx]?.[block]?.rotation || "") : "";
+  return { prev, next };
+}
+
+function isElectiveRotation(rotation = "") {
+  return /elective|vacation|research|board review|clinic|advo/i.test(rotation);
+}
+
+/**
+ * Determine if a resident is PGY-1.
+ */
+function isPGY1(resident) {
+  return /PGY.?1|intern/i.test(resident.pgy || "");
+}
+
+/**
+ * Determine if a resident is PGY-2 or PGY-3.
+ */
+function isSeniorLevel(resident) {
+  return /PGY.?[23]|senior/i.test(resident.pgy || "");
+}
+
+/**
+ * Build a standard shift entry compatible with the existing
+ * makeScheduleEntry format but with richer metadata.
+ */
+function makeEntry(value, dayIndex, source = "CORE", isProtected = false, role = "", pendingWarning = false) {
+  const isWeekend = dayIndex % 7 >= 5;
+  const isNight = /^\d{4}[–-]\d{2}/.test(value) && !value.startsWith("06") && !value.startsWith("07");
+  const isOff = value === "OFF" || value === "POST CALL" || value === "X";
+  return {
+    value,
+    lane: isNight ? "Night" : isWeekend ? "Weekend" : "Day",
+    source: isProtected
+      ? (value === "CLINIC" ? "Resident clinic profile"
+        : value === "DIDACTIC" ? "Institution didactics"
+        : "Approved request / protected event")
+      : pendingWarning
+        ? "⚠ Pending request — chief review"
+        : source === "OUTSIDE_ROTATOR"
+          ? "Outside rotator supplement"
+          : "Master schedule · generated",
+    sourceCode: source,
+    protected: isProtected,
+    overridden: false,
+    role: role || (isNight ? "NIGHT" : isOff ? "OFF" : isWeekend ? "WEEKEND" : "DAY"),
+    pendingWarning,
+    note: pendingWarning ? "Pending request on this date — approve or decline before publishing"
+      : isNight ? "Night coverage"
+      : isWeekend && !isOff ? "Weekend coverage"
+      : ""
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
+// GOLD ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateGoldScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // Pull the two PGY-1 Gold interns from master schedule
+  const linked = masterRowsForService(service, block);
+  const interns = linked.filter((item) => isPGY1(item.resident));
+
+  if (interns.length === 0) {
+    return generateServiceDraftGeneric(service, block);
+  }
+
+  // Supplement to reach 2 if needed
+  while (interns.length < 2) {
+    const used = new Set(interns.map((i) => i.index));
+    for (let offset = 0; offset < masterResidents.length; offset++) {
+      const index = (block * 5 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      if (!isPGY1(masterResidents[index])) continue;
+      interns.push({ resident: masterResidents[index], index, rotation, supplemental: true });
+      break;
+    }
+    break; // prevent infinite loop if no candidates
+  }
+
+  const internA = interns[0].resident;
+  const internB = interns.length > 1 ? interns[1].resident : internA;
+
+  // Determine who starts on Gold (use fairness: prior Gold burden)
+  // Default: internA starts on Gold weeks 1-2, internB on NICU
+  // Weekend fairness pattern: W1=A/B split, W2=A full work (B golden),
+  //                           W3=B full work (A golden), W4=B/A split
+  const weekendPattern = [
+    { sat: "A", sun: "B" },   // weekend 1
+    { sat: "A", sun: "A" },   // weekend 2 — B gets golden
+    { sat: "B", sun: "B" },   // weekend 3 — A gets golden
+    { sat: "B", sun: "A" }    // weekend 4
+  ];
+
+  // Build protected sets
+  const protA = buildProtectedSet(internA.name, blockIndex);
+  const protB = buildProtectedSet(internB.name, blockIndex);
+
+  function goldShifts(intern, isGoldWeeks, protectedSet, weekendOwnership) {
+    return Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const week = Math.floor(dayIndex / 7);
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+      const isGoldWeek = week < 2 ? isGoldWeeks : !isGoldWeeks;
+
+      // Protected time (clinic, didactics, approved leave)
+      if (protectedSet.blocked.has(dayIndex)) {
+        const profile = residentProfiles[intern.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        const didacticDow = clinicDayOfWeek(profile.didactic || "Friday");
+        if (clinicDow !== null && dow === clinicDow) return makeEntry("CLINIC", dayIndex, "CORE", true);
+        if (didacticDow !== null && dow === didacticDow) return makeEntry("DIDACTIC", dayIndex, "CORE", true);
+        return makeEntry("PROTECTED", dayIndex, "CORE", true);
+      }
+
+      // Weekend
+      if (isWeekend) {
+        const wknd = weekendPattern[week] || { sat: "A", sun: "B" };
+        const owner = dow === 5 ? wknd.sat : wknd.sun;
+        const isThisIntern = (intern === internA && owner === "A") ||
+                              (intern === internB && owner === "B");
+        if (isThisIntern) return makeEntry("0700–1900", dayIndex, "CORE", false, "LONG");
+        return makeEntry("OFF", dayIndex, "CORE", false, "OFF");
+      }
+
+      // Weekday
+      if (isGoldWeek) {
+        return makeEntry("0700–1645", dayIndex, "CORE", false, "DAY");
+      } else {
+        // NICU weeks — display NICU label
+        return makeEntry("NICU", dayIndex, "CORE", false, "NICU");
+      }
+    });
+  }
+
+  const sourceA = interns[0].supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+  const sourceB = interns.length > 1 && interns[1].supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+  return [
+    {
+      id: `${block}-Gold-${internA.id}`,
+      name: internA.name,
+      role: `${internA.pgy.replace("PGY-", "P")} · Gold (starts weeks 1-2)`,
+      source: sourceA,
+      sourceLabel: sourceA === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !interns[0].supplemental,
+      pgy: internA.pgy,
+      fairnessSummary: "1 golden wknd (wk 3) · 1 full work wknd (wk 2)",
+      shifts: goldShifts(internA, true, protA, weekendPattern)
+    },
+    {
+      id: `${block}-Gold-${internB.id}`,
+      name: internB.name,
+      role: `${internB.pgy.replace("PGY-", "P")} · Gold (starts weeks 3-4)`,
+      source: sourceB,
+      sourceLabel: sourceB === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !(interns[1]?.supplemental),
+      pgy: internB.pgy,
+      fairnessSummary: "1 golden wknd (wk 2) · 1 full work wknd (wk 3)",
+      shifts: goldShifts(internB, false, protB, weekendPattern)
+    }
+  ];
+}
+
+// ══════════════════════════════════════════════════════════════
+// NEWBORN ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateNewbornScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+  const linked = masterRowsForService(service, block);
+  const interns = linked.filter((item) => isPGY1(item.resident));
+
+  if (interns.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Supplement to reach 2 if below minimum
+  const roster = [...interns];
+  const used = new Set(roster.map((i) => i.index));
+  while (roster.length < 2) {
+    let added = false;
+    for (let offset = 0; offset < masterResidents.length; offset++) {
+      const index = (block * 9 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      if (!isPGY1(masterResidents[index])) continue;
+      roster.push({ resident: masterResidents[index], index, rotation, supplemental: true });
+      used.add(index);
+      added = true;
+      break;
+    }
+    if (!added) break;
+  }
+
+  // Build protected sets
+  const protectedMaps = {};
+  roster.forEach((item) => {
+    protectedMaps[item.resident.name] = buildProtectedSet(item.resident.name, blockIndex);
+  });
+
+  // Track long-call counts for fairness
+  const longCounts = {};
+  roster.forEach((item) => { longCounts[item.resident.name] = 0; });
+
+  // Build per-intern shifts
+  const draft = roster.map((item, rowIndex) => {
+    const intern = item.resident;
+    const { blocked, softWarnings } = protectedMaps[intern.name];
+    const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+
+      // Weekends — redirect to Purple/Orange
+      if (isWeekend) {
+        return makeEntry("See Purple/Orange", dayIndex, source, false, "REDIRECT");
+      }
+
+      // Protected time
+      if (blocked.has(dayIndex)) {
+        const profile = residentProfiles[intern.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        const didacticDow = clinicDayOfWeek(profile.didactic || "Friday");
+        if (clinicDow !== null && dow === clinicDow) return makeEntry("0700-clinic", dayIndex, source, true, "CLINIC");
+        if (didacticDow !== null && dow === didacticDow) return makeEntry("DIDACTIC", dayIndex, source, true);
+        return makeEntry("PROTECTED", dayIndex, source, true);
+      }
+
+      // Pending request warning
+      if (softWarnings.has(dayIndex)) {
+        return makeEntry("0700–1700", dayIndex, source, false, "DAY", true);
+      }
+
+      // Weekday — assign LONG or SHORT based on fairness
+      return makeEntry("0700–1700", dayIndex, source, false, rowIndex % 2 === 0 ? "LONG" : "SHORT");
+    });
+
+    // Count long days for fairness summary
+    const longDays = shifts.filter((s) => s.role === "LONG").length;
+    const shortDays = shifts.filter((s) => s.role === "SHORT").length;
+
+    return {
+      id: `${block}-Newborn-${intern.id}`,
+      name: intern.name,
+      role: `${intern.pgy.replace("PGY-", "P")} · Newborn`,
+      source,
+      sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !item.supplemental,
+      pgy: intern.pgy,
+      fairnessSummary: `${longDays} long days · ${shortDays} short days · weekends → Purple/Orange`,
+      hasShortageAlert: roster.length < 2 && rowIndex === 0,
+      shifts
+    };
+  });
+
+  return draft;
+}
+
+// ══════════════════════════════════════════════════════════════
+// HEME/ONC ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateHemeOncScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+  const linked = masterRowsForService(service, block);
+  const coreInterns = linked.filter((item) => isPGY1(item.resident));
+  const advancedResidents = linked.filter((item) => isSeniorLevel(item.resident));
+
+  if (coreInterns.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Need exactly 2 core interns
+  const roster = coreInterns.slice(0, 2);
+  if (roster.length < 2) {
+    const used = new Set(roster.map((i) => i.index));
+    for (let offset = 0; offset < masterResidents.length && roster.length < 2; offset++) {
+      const index = (block * 11 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      if (!isPGY1(masterResidents[index])) continue;
+      roster.push({ resident: masterResidents[index], index, rotation, supplemental: true });
+      used.add(index);
+    }
+  }
+
+  const internA = roster[0].resident;
+  const internB = roster.length > 1 ? roster[1].resident : roster[0].resident;
+
+  const protA = buildProtectedSet(internA.name, blockIndex);
+  const protB = buildProtectedSet(internB.name, blockIndex);
+
+  // Alternation: A starts inpatient
+  // Week 1: A=Inpatient, B=Outpatient
+  // Week 2: A=Outpatient, B=Inpatient
+  // Week 3: A=Inpatient, B=Outpatient
+  // Week 4: A=Outpatient, B=Inpatient
+
+  function hemeShifts(intern, startsInpatient, protectedSet) {
+    return Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const week = Math.floor(dayIndex / 7);
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+      // Inpatient on odd weeks (0,2) for startsInpatient; even (1,3) for other
+      const isInpatientWeek = startsInpatient ? (week % 2 === 0) : (week % 2 === 1);
+
+      // Protected time
+      if (protectedSet.blocked.has(dayIndex)) {
+        const profile = residentProfiles[intern.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        const didacticDow = clinicDayOfWeek(profile.didactic || "Friday");
+        if (clinicDow !== null && dow === clinicDow) {
+          // Prefer clinic during outpatient week; flag if inpatient week
+          return makeEntry("CLINIC", dayIndex, "CORE", true, "CLINIC");
+        }
+        if (didacticDow !== null && dow === didacticDow) return makeEntry("DIDACTIC", dayIndex, "CORE", true);
+        return makeEntry("PROTECTED", dayIndex, "CORE", true);
+      }
+
+      // Pending warning
+      if (protectedSet.softWarnings.has(dayIndex)) {
+        return makeEntry(isInpatientWeek ? "Inpatient" : "Outpatient", dayIndex, "CORE", false, isInpatientWeek ? "INPATIENT" : "OUTPATIENT", true);
+      }
+
+      if (isWeekend) {
+        // Inpatient intern covers weekend; outpatient is off
+        if (isInpatientWeek) return makeEntry("Inpatient", dayIndex, "CORE", false, "INPATIENT");
+        return makeEntry("OFF", dayIndex, "CORE", false, "OFF");
+      }
+
+      if (isInpatientWeek) return makeEntry("Inpatient", dayIndex, "CORE", false, "INPATIENT");
+      return makeEntry("Outpatient", dayIndex, "CORE", false, "OUTPATIENT");
+    });
+  }
+
+  const result = [
+    {
+      id: `${block}-HemeOnc-${internA.id}`,
+      name: internA.name,
+      role: `${internA.pgy.replace("PGY-", "P")} · Heme/Onc (starts inpatient)`,
+      source: roster[0].supplemental ? "OUTSIDE_ROTATOR" : "CORE",
+      sourceLabel: roster[0].supplemental ? "Outside rotator" : "Master schedule",
+      masterLinked: !roster[0].supplemental,
+      pgy: internA.pgy,
+      fairnessSummary: "Inpatient wks 1,3 · Outpatient wks 2,4 · inpatient covers weekends",
+      shifts: hemeShifts(internA, true, protA)
+    },
+    {
+      id: `${block}-HemeOnc-${internB.id}`,
+      name: internB.name,
+      role: `${internB.pgy.replace("PGY-", "P")} · Heme/Onc (starts outpatient)`,
+      source: roster.length > 1 && roster[1].supplemental ? "OUTSIDE_ROTATOR" : "CORE",
+      sourceLabel: roster.length > 1 && roster[1].supplemental ? "Outside rotator" : "Master schedule",
+      masterLinked: !(roster[1]?.supplemental),
+      pgy: internB.pgy,
+      fairnessSummary: "Outpatient wks 1,3 · Inpatient wks 2,4 · inpatient covers weekends",
+      shifts: hemeShifts(internB, false, protB)
+    }
+  ];
+
+  // Add advanced resident row if present (separate, display-only)
+  if (advancedResidents.length > 0) {
+    const adv = advancedResidents[0].resident;
+    const advProt = buildProtectedSet(adv.name, blockIndex);
+    result.push({
+      id: `${block}-HemeOnc-adv-${adv.id}`,
+      name: adv.name,
+      role: `${adv.pgy.replace("PGY-", "P")} · Advanced Heme/Onc`,
+      source: "CORE",
+      sourceLabel: "Master schedule · advanced",
+      masterLinked: true,
+      pgy: adv.pgy,
+      isAdvanced: true,
+      fairnessSummary: "Advanced resident — see CCJ schedule for weekend coverage",
+      shifts: Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+        const dow = dayIndex % 7;
+        const isWeekend = dow >= 5;
+        if (advProt.blocked.has(dayIndex)) return makeEntry("PROTECTED", dayIndex, "CORE", true);
+        if (isWeekend) return makeEntry("see CCJ sched", dayIndex, "CORE", false, "CCJ");
+        return makeEntry("Inpatient/Advanced", dayIndex, "CORE", false, "ADVANCED");
+      })
+    });
+  }
+
+  return result;
+}
+
+// ══════════════════════════════════════════════════════════════
+// NICU ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateNICUScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // Pull all NICU residents — handle Gold/NICU naming variants
+  const nicuAliases = ["NICU", "Gold/NICU", "NICU/Gold", "Gold team", "Gold"];
+  const linked = masterRowsForService(service, block);
+
+  // Also pull Gold-linked interns (they alternate)
+  const goldLinked = masterResidents
+    .map((resident, index) => ({
+      resident,
+      index,
+      rotation: masterAssignments[index]?.[blockIndex]?.rotation || ""
+    }))
+    .filter((item) => nicuAliases.some((alias) =>
+      item.rotation.toLowerCase().includes(alias.toLowerCase())
+    ) && !linked.some((l) => l.index === item.index));
+
+  const allRoster = [...linked, ...goldLinked];
+
+  // Classify residents
+  const seniors = allRoster.filter((item) => isSeniorLevel(item.resident));
+  const pgy1Interns = allRoster.filter((item) => isPGY1(item.resident));
+
+  // Target: 5-6 total, minimum 3 seniors
+  const roster = [...seniors, ...pgy1Interns];
+
+  // Supplement from outside rotators if below 5
+  if (roster.length < 5) {
+    const used = new Set(roster.map((i) => i.index));
+    for (let offset = 0; roster.length < 5 && offset < masterResidents.length; offset++) {
+      const index = (block * 13 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      roster.push({ resident: masterResidents[index], index, rotation, supplemental: true });
+      used.add(index);
+    }
+  }
+
+  if (roster.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Build protected sets
+  const protectedMaps = {};
+  roster.forEach((item) => {
+    protectedMaps[item.resident.name] = buildProtectedSet(item.resident.name, blockIndex);
+  });
+
+  // Assign night stretches — eligible seniors only (HARD: PGY-1 never on nights)
+  const eligibleForNights = roster.filter((item) => isSeniorLevel(item.resident));
+  const nightLen = 3; // NICU uses 3-night stretches
+  const nightAssignments = [];
+  const claimedNights = new Set();
+
+  eligibleForNights.forEach((item, idx) => {
+    const { blocked } = protectedMaps[item.resident.name];
+    const preferredStart = Math.floor((idx * BLOCK_DAYS) / Math.max(1, eligibleForNights.length));
+    let bestStart = -1;
+
+    for (let attempt = 0; attempt < BLOCK_DAYS; attempt++) {
+      const start = (preferredStart + attempt) % (BLOCK_DAYS - nightLen);
+      // Avoid Thursday start (dow 3 = Thursday if Mon=0)
+      const startDow = start % 7;
+      if (startDow === 3) continue; // soft avoid Thursday
+      let valid = true;
+      for (let d = start; d < start + nightLen + 1 && d < BLOCK_DAYS; d++) {
+        if (blocked.has(d) || claimedNights.has(d)) { valid = false; break; }
+      }
+      if (valid) { bestStart = start; break; }
+    }
+
+    if (bestStart >= 0) {
+      for (let d = bestStart; d < bestStart + nightLen; d++) claimedNights.add(d);
+      if (bestStart + nightLen < BLOCK_DAYS) claimedNights.add(bestStart + nightLen);
+      nightAssignments.push({ name: item.resident.name, startDay: bestStart, length: nightLen, postCallDay: bestStart + nightLen });
+    }
+  });
+
+  // Task distribution targets: seniors ~8 total (5-6 long + 2-3 procedure), interns ~5 total
+  const taskCounters = {};
+  roster.forEach((item) => {
+    taskCounters[item.resident.name] = { longCall: 0, procedure: 0 };
+  });
+
+  const draft = roster.map((item) => {
+    const intern = item.resident;
+    const isIntern = isPGY1(intern);
+    const nightAssign = nightAssignments.find((a) => a.name === intern.name);
+    const { blocked, softWarnings } = protectedMaps[intern.name];
+    const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+    // Determine Gold weekend dates for PGY-1 intern (SEE_GOLD)
+    // Gold owns weekends 1 and 3 for one intern, 2 and 4 for other
+    // Simplified: odd weeks = see Gold for PGY-1
+    const seeGoldWeeks = isIntern ? new Set([0, 2]) : new Set();
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const week = Math.floor(dayIndex / 7);
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+
+      // Post-call
+      if (nightAssign && dayIndex === nightAssign.postCallDay) {
+        return makeEntry("X", dayIndex, source, true, "POST_CALL");
+      }
+
+      // Night stretch
+      if (nightAssign && dayIndex >= nightAssign.startDay && dayIndex < nightAssign.startDay + nightAssign.length) {
+        return makeEntry(isWeekend ? "1830–0700" : "1830–0700", dayIndex, source, false, "NIGHT");
+      }
+
+      // PGY-1 intern: SEE_GOLD on Gold weekends
+      if (isIntern && isWeekend && seeGoldWeeks.has(week)) {
+        return makeEntry("See Gold", dayIndex, source, false, "SEE_GOLD");
+      }
+
+      // Protected time
+      if (blocked.has(dayIndex)) {
+        const profile = residentProfiles[intern.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        if (clinicDow !== null && dow === clinicDow) return makeEntry("CLINIC", dayIndex, source, true);
+        return makeEntry("DIDACTIC", dayIndex, source, true);
+      }
+
+      // Weekend day coverage
+      if (isWeekend) {
+        const tc = taskCounters[intern.name];
+        if (!isIntern && tc.longCall < 6) {
+          tc.longCall++;
+          return makeEntry("0630–1900", dayIndex, source, false, "LONG");
+        }
+        return makeEntry("OFF", dayIndex, source, false, "OFF");
+      }
+
+      // Weekday — alternate long call, procedure call, standard day
+      if (!isIntern) {
+        const tc = taskCounters[intern.name];
+        const totalTarget = 8;
+        const total = tc.longCall + tc.procedure;
+        if (total < totalTarget && tc.longCall < 6 && dayIndex % 4 === 0) {
+          tc.longCall++;
+          return makeEntry("0630–1900", dayIndex, source, false, "LONG");
+        }
+        if (total < totalTarget && tc.procedure < 3 && dayIndex % 6 === 1) {
+          tc.procedure++;
+          return makeEntry("0630–1700", dayIndex, source, false, "PROCEDURE");
+        }
+      } else {
+        const tc = taskCounters[intern.name];
+        if (tc.longCall < 3 && dayIndex % 5 === 0) {
+          tc.longCall++;
+          return makeEntry("0630–1900", dayIndex, source, false, "LONG");
+        }
+        if (tc.procedure < 3 && dayIndex % 7 === 2) {
+          tc.procedure++;
+          return makeEntry("0630–1700", dayIndex, source, false, "PROCEDURE");
+        }
+      }
+
+      return makeEntry("0630–1700", dayIndex, source, false, "DAY");
+    });
+
+    const tc = taskCounters[intern.name];
+    const nightCount = nightAssign?.length || 0;
+
+    return {
+      id: `${block}-NICU-${intern.id}`,
+      name: intern.name,
+      role: `${intern.pgy.replace("PGY-", "P")} · NICU · ${isIntern ? "Intern" : "Senior"}`,
+      source,
+      sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !item.supplemental,
+      pgy: intern.pgy,
+      isNICUSenior: !isIntern,
+      fairnessSummary: `${nightCount} nights · ${tc.longCall} long calls · ${tc.procedure} procedure calls`,
+      nightStretch: nightAssign ? { start: nightAssign.startDay, end: nightAssign.startDay + nightAssign.length - 1, postCall: nightAssign.postCallDay } : null,
+      hasShortageAlert: roster.length < 5 && item === roster[0],
+      shifts
+    };
+  });
+
+  return draft;
+}
+
+// ══════════════════════════════════════════════════════════════
+// PICU ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generatePICUScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // PICU: PGY-2/PGY-3 only — HARD block PGY-1
+  const linked = masterRowsForService(service, block);
+  const eligible = linked.filter((item) => isSeniorLevel(item.resident));
+  const pgy1Found = linked.filter((item) => isPGY1(item.resident));
+
+  // Peak blocks 7, 8, 9 need up to 10-11; standard is 7-8
+  const isPeakBlock = [7, 8, 9].includes(block);
+  const targetSize = isPeakBlock ? 10 : 7;
+
+  const roster = [...eligible];
+
+  // Supplement with outside rotators if below target
+  if (roster.length < targetSize) {
+    const used = new Set(roster.map((i) => i.index));
+    for (let offset = 0; roster.length < targetSize && offset < masterResidents.length; offset++) {
+      const index = (block * 17 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      if (isPGY1(masterResidents[index])) continue; // hard block PGY-1
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      roster.push({ resident: masterResidents[index], index, rotation, supplemental: true });
+      used.add(index);
+    }
+  }
+
+  if (roster.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Build protected sets
+  const protectedMaps = {};
+  roster.forEach((item) => {
+    protectedMaps[item.resident.name] = buildProtectedSet(item.resident.name, blockIndex);
+  });
+
+  // Night stretches: 4 consecutive nights + post-call
+  // Peak blocks may need 2 night residents; standard 1
+  const nightResidentsNeeded = isPeakBlock ? 2 : 1;
+  const nightLen = 4;
+  const claimedNights = new Set();
+  const nightAssignments = [];
+
+  roster.slice(0, nightResidentsNeeded * 2).forEach((item, idx) => {
+    if (nightAssignments.filter((a) => !a.gap).length >= nightResidentsNeeded * 2) return;
+    const { blocked } = protectedMaps[item.resident.name];
+    const preferredStart = Math.floor((idx * BLOCK_DAYS) / Math.max(1, roster.length));
+    let bestStart = -1;
+
+    for (let attempt = 0; attempt < BLOCK_DAYS; attempt++) {
+      const start = (preferredStart + attempt) % (BLOCK_DAYS - nightLen);
+      let valid = true;
+      for (let d = start; d < start + nightLen + 1 && d < BLOCK_DAYS; d++) {
+        if (blocked.has(d) || claimedNights.has(d)) { valid = false; break; }
+      }
+      if (valid) { bestStart = start; break; }
+    }
+
+    if (bestStart >= 0) {
+      for (let d = bestStart; d < bestStart + nightLen; d++) claimedNights.add(d);
+      if (bestStart + nightLen < BLOCK_DAYS) claimedNights.add(bestStart + nightLen);
+      nightAssignments.push({ name: item.resident.name, startDay: bestStart, length: nightLen, postCallDay: bestStart + nightLen });
+    }
+  });
+
+  // Weekend fairness: target 2 residents per unit per weekend day
+  const goldenWeekendByRow = roster.map((_, idx) => idx % 4);
+
+  const draft = roster.map((item, rowIndex) => {
+    const resident = item.resident;
+    const nightAssign = nightAssignments.find((a) => a.name === resident.name);
+    const { blocked, softWarnings } = protectedMaps[resident.name];
+    const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+    // Unit assignment: alternate Unit 1 / Unit 2 by resident row
+    // Weeks 1-2: primary unit; Weeks 3-4: alternate unit
+    const primaryUnit = rowIndex % 2 === 0 ? "U1-Day" : "U2-Day";
+    const altUnit = rowIndex % 2 === 0 ? "U2-Day" : "U1-Day";
+    const goldenWeek = goldenWeekendByRow[rowIndex];
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const week = Math.floor(dayIndex / 7);
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+
+      // PGY-1 hard block check (should never reach here, but safety net)
+      if (isPGY1(resident)) return makeEntry("INELIGIBLE", dayIndex, source, true, "ERROR");
+
+      // Post-call
+      if (nightAssign && dayIndex === nightAssign.postCallDay) {
+        return makeEntry("X", dayIndex, source, true, "POST_CALL");
+      }
+
+      // Night stretch
+      if (nightAssign && dayIndex >= nightAssign.startDay && dayIndex < nightAssign.startDay + nightAssign.length) {
+        return makeEntry(isWeekend ? "1830–0700" : "1740–0700", dayIndex, source, false, "NIGHT");
+      }
+
+      // Protected
+      if (blocked.has(dayIndex)) {
+        const profile = residentProfiles[resident.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        const didacticDow = clinicDayOfWeek(profile.didactic || "Friday");
+        if (clinicDow !== null && dow === clinicDow) return makeEntry("CLINIC", dayIndex, source, true);
+        if (didacticDow !== null && dow === didacticDow) return makeEntry("DIDACTIC", dayIndex, source, true);
+        return makeEntry("PROTECTED", dayIndex, source, true);
+      }
+
+      // Pending
+      if (softWarnings.has(dayIndex)) {
+        return makeEntry(week < 2 ? primaryUnit : altUnit, dayIndex, source, false, "DAY", true);
+      }
+
+      // Golden weekend
+      if (week === goldenWeek && isWeekend) {
+        return makeEntry("OFF", dayIndex, source, false, "OFF");
+      }
+
+      // Weekend coverage
+      if (isWeekend) {
+        const unit = rowIndex % 2 === 0 ? "U1-Day" : "U2-Day";
+        return makeEntry(unit, dayIndex, source, false, "WEEKEND");
+      }
+
+      // Weekday — unit assignment (weeks 1-2 primary, weeks 3-4 alternate)
+      return makeEntry(week < 2 ? primaryUnit : altUnit, dayIndex, source, false, "DAY");
+    });
+
+    const nightCount = nightAssign?.length || 0;
+
+    return {
+      id: `${block}-PICU-${resident.id}`,
+      name: resident.name,
+      role: `${resident.pgy.replace("PGY-", "P")} · PICU · ${item.supplemental ? "Outside rotator" : "Pediatric"}`,
+      source,
+      sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !item.supplemental,
+      pgy: resident.pgy,
+      fairnessSummary: `${nightCount} nights · ${primaryUnit} (wks 1-2) · ${altUnit} (wks 3-4) · golden wknd ${goldenWeek + 1}`,
+      hasShortageAlert: roster.length < targetSize && rowIndex === 0,
+      isPeakBlock,
+      pgy1Blocked: pgy1Found.length > 0 && rowIndex === 0,
+      shifts
+    };
+  });
+
+  return draft;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SENIOR NIGHT SHIFT ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateSeniorNightScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // Pull PGY-2 residents assigned to Night Shift for this block
+  const linked = masterRowsForService(service, block);
+  const nightResidents = linked.filter((item) =>
+    /PGY.?2/i.test(item.resident.pgy) ||
+    /night/i.test(item.rotation || "")
+  );
+
+  // Also pull any PGY-2 with night rotation label
+  const additionalNight = masterResidents
+    .map((resident, index) => ({
+      resident,
+      index,
+      rotation: masterAssignments[index]?.[blockIndex]?.rotation || ""
+    }))
+    .filter((item) =>
+      /night/i.test(item.rotation) &&
+      /PGY.?2/i.test(item.resident.pgy) &&
+      !nightResidents.some((n) => n.index === item.index)
+    );
+
+  const roster = [...nightResidents, ...additionalNight].slice(0, 8);
+
+  if (roster.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Two night services
+  const services = ["Hospitalist Night", "Gold/PHO/BMT/NB Night"];
+
+  // Build protected sets
+  const protectedMaps = {};
+  roster.forEach((item) => {
+    protectedMaps[item.resident.name] = buildProtectedSet(item.resident.name, blockIndex);
+  });
+
+  // Determine availability windows for split-block residents
+  // Default: full block. Could be weeks 1-2 or weeks 3-4.
+  function getAvailWindow(item) {
+    // If supplemental from linked, check if they have a split pattern
+    const rotation = item.rotation || "";
+    if (/first.?half|wk.?1|week.?1-2/i.test(rotation)) return { start: 0, end: 13 };
+    if (/second.?half|wk.?3|week.?3-4/i.test(rotation)) return { start: 14, end: 27 };
+    return { start: 0, end: 27 };
+  }
+
+  // Assign night stretches: target 4 consecutive, min 2, max 5
+  const TARGET_NIGHT_LEN = 4;
+  const MIN_NIGHT_LEN = 2;
+  const MAX_NIGHT_LEN = 5;
+  const claimedSlots = {}; // date -> service index
+  for (let d = 0; d < BLOCK_DAYS; d++) { claimedSlots[d] = []; }
+
+  const nightPlan = []; // { name, dayIndex, serviceIndex }
+
+  // For each day, we need both services covered
+  // Simple greedy: assign 4-night stretches per resident per service
+  const serviceAssigned = {};
+  roster.forEach((item) => { serviceAssigned[item.resident.name] = []; });
+
+  // Track night counts for fairness comparison
+  const nightCounts = {};
+  roster.forEach((item) => { nightCounts[item.resident.name] = 0; });
+
+  // Two passes: one per service
+  services.forEach((svc, svcIdx) => {
+    let dayPointer = 0;
+
+    while (dayPointer < BLOCK_DAYS) {
+      // Find the resident with fewest nights who can cover starting at dayPointer
+      const candidates = roster.filter((item) => {
+        const window = getAvailWindow(item);
+        const { blocked } = protectedMaps[item.resident.name];
+        if (dayPointer < window.start || dayPointer > window.end) return false;
+        // Can cover at least MIN_NIGHT_LEN consecutive nights
+        for (let d = dayPointer; d < Math.min(dayPointer + MIN_NIGHT_LEN, BLOCK_DAYS); d++) {
+          if (blocked.has(d)) return false;
+          // Check this service not already assigned this day
+          if (claimedSlots[d].includes(svcIdx)) return false;
+        }
+        return true;
+      }).sort((a, b) => nightCounts[a.resident.name] - nightCounts[b.resident.name]);
+
+      if (candidates.length === 0) {
+        dayPointer++;
+        continue;
+      }
+
+      const chosen = candidates[0];
+      const window = getAvailWindow(chosen);
+      const { blocked } = protectedMaps[chosen.resident.name];
+
+      // Find the longest valid stretch from dayPointer (up to MAX_NIGHT_LEN)
+      let stretchLen = 0;
+      for (let d = dayPointer; d < Math.min(dayPointer + MAX_NIGHT_LEN, window.end + 1, BLOCK_DAYS); d++) {
+        if (blocked.has(d) || claimedSlots[d].includes(svcIdx)) break;
+        stretchLen++;
+      }
+
+      if (stretchLen < MIN_NIGHT_LEN) {
+        dayPointer++;
+        continue;
+      }
+
+      // Assign stretch
+      for (let d = dayPointer; d < dayPointer + stretchLen; d++) {
+        claimedSlots[d].push(svcIdx);
+        nightPlan.push({ name: chosen.resident.name, dayIndex: d, serviceIndex: svcIdx, svcLabel: svc });
+      }
+      nightCounts[chosen.resident.name] += stretchLen;
+      dayPointer += stretchLen;
+    }
+  });
+
+  // Build draft rows (one row per night service for display purposes,
+  // but we show by resident)
+  const residentNightMap = {};
+  roster.forEach((item) => { residentNightMap[item.resident.name] = {}; });
+  nightPlan.forEach(({ name, dayIndex, serviceIndex, svcLabel }) => {
+    if (!residentNightMap[name]) residentNightMap[name] = {};
+    residentNightMap[name][dayIndex] = { serviceIndex, svcLabel };
+  });
+
+  const draft = roster.map((item) => {
+    const resident = item.resident;
+    const window = getAvailWindow(item);
+    const { blocked } = protectedMaps[resident.name];
+    const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+    const myNights = residentNightMap[resident.name] || {};
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+
+      // Outside availability window — hard block
+      if (dayIndex < window.start || dayIndex > window.end) {
+        return makeEntry("—", dayIndex, source, true, "UNAVAILABLE");
+      }
+
+      // Protected time
+      if (blocked.has(dayIndex)) {
+        return makeEntry("PROTECTED", dayIndex, source, true);
+      }
+
+      // Night assignment for this day
+      const night = myNights[dayIndex];
+      if (night) {
+        const startTime = isWeekend ? "1815" : (night.serviceIndex === 0 ? "1700" : "1630");
+        const endTime = isWeekend ? "0800" : (night.serviceIndex === 0 ? "0700" : "0800");
+        return makeEntry(`${startTime}–${endTime}`, dayIndex, source, false, "NIGHT");
+      }
+
+      return makeEntry("OFF", dayIndex, source, false, "OFF");
+    });
+
+    const totalNights = Object.keys(myNights).length;
+    const hospNights = Object.values(myNights).filter((n) => n.serviceIndex === 0).length;
+    const goldNights = Object.values(myNights).filter((n) => n.serviceIndex === 1).length;
+
+    return {
+      id: `${block}-NightSenior-${resident.id}`,
+      name: resident.name,
+      role: `${resident.pgy.replace("PGY-", "P")} · Night Float`,
+      source,
+      sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !item.supplemental,
+      pgy: resident.pgy,
+      availabilityWindow: window,
+      fairnessSummary: `${totalNights} nights total · ${hospNights} Hospitalist · ${goldNights} Gold/PHO/BMT`,
+      shifts
+    };
+  });
+
+  return draft;
+}
+
+// ══════════════════════════════════════════════════════════════
+// FLOOR SENIOR LINKAGE ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateFloorSeniorDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // Pull all PGY-3 residents for this block
+  const pgy3Residents = masterResidents
+    .map((resident, index) => ({
+      resident,
+      index,
+      rotation: masterAssignments[index]?.[blockIndex]?.rotation || ""
+    }))
+    .filter((item) => /PGY.?3/i.test(item.resident.pgy));
+
+  if (pgy3Residents.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Parse role segments from rotation labels using tag-based matching
+  function parseFloorRole(rotation = "") {
+    const r = rotation.toLowerCase();
+    const roles = [];
+    const tokens = rotation.split("/").map((t) => t.trim());
+
+    tokens.forEach((token, idx) => {
+      const t = token.toLowerCase();
+      const isFirst = idx === 0;
+      const isSecond = idx === 1;
+      // Week range: first token = weeks 1-2, second token = weeks 3-4
+      const weekStart = isFirst ? 0 : 14;
+      const weekEnd = isFirst ? 13 : 27;
+
+      if (/\bpurple\b/.test(t)) {
+        roles.push({ role: "PURPLE_SENIOR", destination: "Purple", start: weekStart, end: weekEnd, label: "Purple Senior", confidence: "HIGH" });
+      } else if (/\borange\b/.test(t)) {
+        roles.push({ role: "ORANGE_SENIOR", destination: "Orange", start: weekStart, end: weekEnd, label: "Orange Senior", confidence: "HIGH" });
+      } else if (/\bgold\b/.test(t) && /senior/i.test(rotation)) {
+        roles.push({ role: "GOLD_SENIOR", destination: "Gold", start: weekStart, end: weekEnd, label: "Gold Senior", confidence: "HIGH" });
+      } else if (/\badmit\b/.test(t)) {
+        roles.push({ role: "ADMIT_SENIOR", destination: "Shared Floor Panel", start: weekStart, end: weekEnd, label: "Admit Senior", confidence: "HIGH" });
+      } else if (/\bagp\b/.test(t) || /elective|tox|ortho|palliative|psych|nap|gerd|rads/i.test(t)) {
+        roles.push({ role: "ELECTIVE_ONLY", destination: null, start: weekStart, end: weekEnd, label: "Elective", confidence: "HIGH" });
+      } else {
+        roles.push({ role: "UNKNOWN", destination: null, start: weekStart, end: weekEnd, label: token, confidence: "NEEDS_REVIEW" });
+      }
+    });
+
+    return roles;
+  }
+
+  const draft = [];
+
+  pgy3Residents.forEach((item) => {
+    const resident = item.resident;
+    const roles = parseFloorRole(item.rotation);
+    const protectedSet = buildProtectedSet(resident.name, blockIndex);
+
+    const floorRoles = roles.filter((r) => r.role !== "ELECTIVE_ONLY");
+    if (floorRoles.length === 0) return; // no floor role for this resident
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const dow = dayIndex % 7;
+      const isWeekend = dow >= 5;
+
+      // Find which role is active for this day
+      const activeRole = floorRoles.find((r) => dayIndex >= r.start && dayIndex <= r.end);
+      const elective = roles.find((r) => r.role === "ELECTIVE_ONLY" && dayIndex >= r.start && dayIndex <= r.end);
+
+      // Outside all floor role windows
+      if (!activeRole) {
+        if (elective) return makeEntry("Elective", dayIndex, "CORE", false, "ELECTIVE");
+        return makeEntry("—", dayIndex, "CORE", false, "UNAVAILABLE");
+      }
+
+      // Protected time
+      if (protectedSet.blocked.has(dayIndex)) {
+        const profile = residentProfiles[resident.name] || {};
+        const clinicDow = clinicDayOfWeek(
+          Array.isArray(profile.clinic) ? profile.clinic[blockIndex] : (profile.clinic || "")
+        );
+        const didacticDow = clinicDayOfWeek(profile.didactic || "Friday");
+        if (clinicDow !== null && dow === clinicDow) return makeEntry("CLINIC", dayIndex, "CORE", true);
+        if (didacticDow !== null && dow === didacticDow) return makeEntry("DIDACTIC", dayIndex, "CORE", true);
+        return makeEntry("PROTECTED", dayIndex, "CORE", true);
+      }
+
+      // Weekend: senior coverage display
+      if (isWeekend) {
+        return makeEntry(`${activeRole.label} · ${dow === 5 ? "Long" : "Short"}`, dayIndex, "CORE", false, "WEEKEND_SENIOR");
+      }
+
+      return makeEntry(activeRole.label, dayIndex, "CORE", false, activeRole.role);
+    });
+
+    const floorSummary = floorRoles.map((r) => `${r.label} (days ${r.start + 1}–${r.end + 1})`).join(", ");
+    const needsReview = roles.some((r) => r.confidence === "NEEDS_REVIEW");
+
+    draft.push({
+      id: `${block}-FloorSenior-${resident.id}`,
+      name: resident.name,
+      role: `${resident.pgy.replace("PGY-", "P")} · ${item.rotation || "Floor Senior"}`,
+      source: "CORE",
+      sourceLabel: "Master schedule",
+      masterLinked: true,
+      pgy: resident.pgy,
+      floorRoles,
+      needsReview,
+      fairnessSummary: floorSummary || "No floor role parsed",
+      shifts
+    });
+  });
+
+  if (draft.length === 0) return generateServiceDraftGeneric(service, block);
+  return draft;
+}
+
+// ══════════════════════════════════════════════════════════════
+// CALL POOL / JEOPARDY ENGINE
+// ══════════════════════════════════════════════════════════════
+
+function generateCallPoolScheduleDraft(service, block) {
+  const blockIndex = block - 1;
+
+  // Pull PGY-2 and PGY-3 residents NOT on core inpatient services
+  const coreServices = new Set([
+    "Purple", "Orange", "Gold", "Gold/NICU", "NICU", "NICU/Gold",
+    "Newborn", "PHO", "Heme/Onc", "PICU", "Night Float", "Night Senior"
+  ]);
+
+  const eligiblePool = masterResidents
+    .map((resident, index) => ({
+      resident,
+      index,
+      rotation: masterAssignments[index]?.[blockIndex]?.rotation || ""
+    }))
+    .filter((item) => {
+      // Hard block: PGY-1 never in call pool
+      if (isPGY1(item.resident)) return false;
+      // Must be PGY-2 or PGY-3
+      if (!/PGY.?[23]/i.test(item.resident.pgy)) return false;
+      // Must not be on a core inpatient service
+      if (coreServices.has(item.rotation)) return false;
+      // Must not be on vacation or leave
+      if (/vacation|leave|loa/i.test(item.rotation)) return false;
+      // Must not have approved leave for the whole block
+      if (hasApprovedLeave(item.resident.name, block)) return false;
+      return true;
+    });
+
+  if (eligiblePool.length === 0) return generateServiceDraftGeneric(service, block);
+
+  // Slot types per day
+  const SLOTS = ["CLINIC_CALL", "J1", "J2", "J3"];
+  const SLOT_LABELS = { CLINIC_CALL: "CLINIC CALL", J1: "J1", J2: "J2", J3: "J3" };
+
+  // Track assignment stats per resident
+  const stats = {};
+  eligiblePool.forEach((item) => {
+    stats[item.resident.name] = {
+      total: 0, clinicCall: 0, j1: 0, j2: 0, j3: 0,
+      weekendDays: 0, assignedDays: new Set()
+    };
+  });
+
+  // Build assignment grid: dayIndex -> { slot -> residentName }
+  const grid = Array.from({ length: BLOCK_DAYS }, () => ({
+    CLINIC_CALL: null, J1: null, J2: null, J3: null
+  }));
+
+  // Get clinic day of week for each resident (for blocking)
+  function getClinicDow(residentName) {
+    const profile = residentProfiles[residentName] || {};
+    const clinicEntry = Array.isArray(profile.clinic)
+      ? profile.clinic[blockIndex]
+      : (profile.clinic || "");
+    return clinicDayOfWeek(clinicEntry);
+  }
+
+  // Check if a resident is blocked for a given dayIndex
+  function isBlockedForCall(item, dayIndex) {
+    const dow = dayIndex % 7;
+    const name = item.resident.name;
+
+    // Hard block: PGY-1
+    if (isPGY1(item.resident)) return true;
+
+    // Approved request blocks
+    if (getApprovedRequests(name, block).length > 0 &&
+        /vacation|pto|sick/i.test(getApprovedRequests(name, block)[0]?.type || "")) return true;
+
+    // Clinic day AND day before clinic — both hard blocked
+    const clinicDow = getClinicDow(name);
+    if (clinicDow !== null) {
+      if (dow === clinicDow) return true;
+      const prevDow = (clinicDow + 7 - 1) % 7;
+      if (dow === prevDow) return true;
+    }
+
+    // No back-to-back assignments
+    if (stats[name].assignedDays.has(dayIndex - 1) ||
+        stats[name].assignedDays.has(dayIndex + 1)) return true;
+
+    // Same day already assigned
+    if (stats[name].assignedDays.has(dayIndex)) return true;
+
+    return false;
+  }
+
+  // Candidate scoring for a slot
+  function scoreCandidate(item, dayIndex, slotType) {
+    const name = item.resident.name;
+    const s = stats[name];
+    const isWeekend = dayIndex % 7 >= 5;
+    let score = 0;
+    score += 100 * s.j1;                          // penalize extra J1
+    score += 35 * s.weekendDays * (isWeekend ? 1 : 0);
+    score += 25 * s.total;
+    score += 20 * (s[slotType.toLowerCase().replace("_call", "Call")] || s[slotType.toLowerCase()] || 0);
+    // Spacing: penalize if last call was recent
+    let minSpacing = BLOCK_DAYS;
+    s.assignedDays.forEach((d) => { minSpacing = Math.min(minSpacing, Math.abs(d - dayIndex)); });
+    if (minSpacing === 2) score += 40;
+    if (minSpacing === 3) score += 10;
+    return score;
+  }
+
+  function assignSlot(dayIndex, slotType) {
+    const isWeekend = dayIndex % 7 >= 5;
+    const candidates = eligiblePool.filter((item) => !isBlockedForCall(item, dayIndex));
+    if (candidates.length === 0) return;
+
+    // For J1: ensure fairness — prefer residents with 0 J1s first
+    let sorted;
+    if (slotType === "J1") {
+      sorted = candidates.sort((a, b) => {
+        const aJ1 = stats[a.resident.name].j1;
+        const bJ1 = stats[b.resident.name].j1;
+        if (aJ1 !== bJ1) return aJ1 - bJ1;
+        return scoreCandidate(a, dayIndex, slotType) - scoreCandidate(b, dayIndex, slotType);
+      });
+    } else {
+      sorted = candidates.sort((a, b) =>
+        scoreCandidate(a, dayIndex, slotType) - scoreCandidate(b, dayIndex, slotType)
+      );
+    }
+
+    const chosen = sorted[0];
+    const name = chosen.resident.name;
+    grid[dayIndex][slotType] = name;
+    const s = stats[name];
+    s.total++;
+    s.assignedDays.add(dayIndex);
+    if (isWeekend) s.weekendDays++;
+    if (slotType === "CLINIC_CALL") s.clinicCall++;
+    else if (slotType === "J1") s.j1++;
+    else if (slotType === "J2") s.j2++;
+    else if (slotType === "J3") s.j3++;
+  }
+
+  // PASS 3: Weekends FIRST
+  for (let dayIndex = 0; dayIndex < BLOCK_DAYS; dayIndex++) {
+    if (dayIndex % 7 < 5) continue; // skip weekdays
+    ["CLINIC_CALL", "J1", "J2", "J3"].forEach((slot) => assignSlot(dayIndex, slot));
+  }
+
+  // PASS 4-7: Weekdays
+  // J1 first for fairness
+  for (let dayIndex = 0; dayIndex < BLOCK_DAYS; dayIndex++) {
+    if (dayIndex % 7 >= 5) continue;
+    assignSlot(dayIndex, "J1");
+  }
+  ["CLINIC_CALL", "J2", "J3"].forEach((slotType) => {
+    for (let dayIndex = 0; dayIndex < BLOCK_DAYS; dayIndex++) {
+      if (dayIndex % 7 >= 5) continue;
+      if (!grid[dayIndex][slotType]) assignSlot(dayIndex, slotType);
+    }
+  });
+
+  // Build one row per resident showing their assignments
+  const draft = eligiblePool
+    .filter((item) => stats[item.resident.name].total > 0 || item.index < 6)
+    .map((item) => {
+      const resident = item.resident;
+      const s = stats[resident.name];
+      const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+      const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+        const dow = dayIndex % 7;
+        const isWeekend = dow >= 5;
+        const blocked = isBlockedForCall(item, dayIndex);
+
+        // Check what slot this resident was assigned
+        const assignedSlot = SLOTS.find((slot) => grid[dayIndex][slot] === resident.name);
+
+        if (assignedSlot) {
+          return makeEntry(SLOT_LABELS[assignedSlot], dayIndex, source, false, assignedSlot);
+        }
+
+        // Check if blocked for clinic day
+        const clinicDow = getClinicDow(resident.name);
+        if (clinicDow !== null && dow === clinicDow) {
+          return makeEntry("CLINIC", dayIndex, source, true, "CLINIC");
+        }
+        const prevDow = clinicDow !== null ? (clinicDow + 6) % 7 : -1;
+        if (prevDow >= 0 && dow === prevDow) {
+          return makeEntry("Pre-clinic block", dayIndex, source, true, "PRE_CLINIC");
+        }
+
+        // Pending request warning
+        if (getPendingRequests(resident.name, block).length > 0 && dayIndex % 7 === 1) {
+          return makeEntry("OFF", dayIndex, source, false, "OFF", true);
+        }
+
+        return makeEntry("—", dayIndex, source, false, "AVAILABLE");
+      });
+
+      return {
+        id: `${block}-CallPool-${resident.id}`,
+        name: resident.name,
+        role: `${resident.pgy.replace("PGY-", "P")} · ${item.rotation || "Elective"} · Call pool`,
+        source,
+        sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+        masterLinked: !item.supplemental,
+        pgy: resident.pgy,
+        fairnessSummary: `${s.total} total · ${s.j1} J1 · ${s.clinicCall} clinic call · ${s.j2} J2 · ${s.j3} J3 · ${s.weekendDays} weekend days`,
+        shifts
+      };
+    });
+
+  return draft.length > 0 ? draft : generateServiceDraftGeneric(service, block);
+}
+
+// ══════════════════════════════════════════════════════════════
+// UPDATED ROUTER — replaces the previous generateServiceDraft
+// ══════════════════════════════════════════════════════════════
+
+// Override the router that was set by the Purple/Orange engine block
+// to include all 9 services.
 function generateServiceDraft(service, block) {
-  if (FLOOR_SERVICES.includes(service)) {
+  // Purple and Orange — real floor engine
+  if (service === "Purple" || service === "Orange") {
     return generateFloorScheduleDraft(service, block);
   }
+  // Gold
+  if (service === "Gold") {
+    return generateGoldScheduleDraft(service, block);
+  }
+  // Newborn
+  if (service === "Newborn") {
+    return generateNewbornScheduleDraft(service, block);
+  }
+  // Heme/Onc
+  if (service === "Heme/Onc" || service === "PHO") {
+    return generateHemeOncScheduleDraft(service, block);
+  }
+  // NICU
+  if (service === "NICU") {
+    return generateNICUScheduleDraft(service, block);
+  }
+  // PICU
+  if (service === "PICU") {
+    return generatePICUScheduleDraft(service, block);
+  }
+  // Senior Night Shift
+  if (service === "Night Senior" || service === "Senior Night") {
+    return generateSeniorNightScheduleDraft(service, block);
+  }
+  // Floor Senior Linkage
+  if (service === "Floor Senior" || service === "Floor Senior Linkage") {
+    return generateFloorSeniorDraft(service, block);
+  }
+  // Call Pool / Jeopardy
+  if (service === "Jeopardy" || service === "Call Pool") {
+    return generateCallPoolScheduleDraft(service, block);
+  }
+  // All other services — generic fallback
   return generateServiceDraftGeneric(service, block);
 }
 
-// ── Generic fallback (original generateServiceDraft renamed below) ──────────
 function loadActiveScheduleDraft() {
   const key = scheduleDraftKey();
   if (!scheduleDraftStore[key]) scheduleDraftStore[key] = generateServiceDraft(activeScheduleService, currentBlock);
