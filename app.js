@@ -948,11 +948,10 @@ function chiefDashboard() {
               ${readiness.map((item)=>serviceRow(item.team.name.slice(0,2).toUpperCase(), item.team.color, item.team.name, serviceRuleProfiles[item.team.name]?.staffing || item.team.rotation, item.progress, item.label, item.className)).join("")}
             </div>
           </section>
-          <section class="generation-card">
-            <h2>${pendingCount ? `Build the remaining ${pendingCount} schedules` : `Block ${currentBlock} schedules are ready`}</h2>
-            <p>${readyCount} of ${readiness.length} service schedules are ready or published. Generate drafts for pending services, then review and publish them.</p>
-            <button class="open-generate"><span class="icon" data-icon="wand"></span> Generate all schedules</button>
-          </section>
+          <div class="panel" style="padding:10px 14px;display:flex;align-items:center;gap:12px;margin-top:12px;">
+            <button class="primary-button open-generate"><span class="icon" data-icon="wand"></span> Generate all schedules</button>
+            <span style="font-size:12px;color:var(--text-secondary);">${readyCount} of ${readiness.length} services ready for Block ${currentBlock}</span>
+          </div>
         </div>
 
         <section class="panel">
@@ -2049,10 +2048,9 @@ function masterImportGateway() {
     </div>
     ${importActive ? `<div class="master-import-panel">
       <input class="master-import-file" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden>
-      <div class="import-dropzone">
-        <span class="metric-icon amber"><span class="icon" data-icon="grid"></span></span>
-        <div><h3>Upload an existing annual master schedule</h3><p>Best format: Excel workbook with tabs like PGY1, PGY2, PGY3, MedPeds and block columns. PDF is accepted for review, but Excel gives the cleanest structured mapping.</p></div>
-        <button class="primary-button trigger-master-import" type="button"><span class="icon" data-icon="plus"></span> Choose file</button>
+      <div class="import-dropzone-compact trigger-master-import" style="cursor:pointer;display:flex;align-items:center;gap:12px;background:#F9FAFB;border:1px dashed #D1D5DB;border-radius:6px;max-height:80px;padding:14px 16px;margin-bottom:12px;">
+        <span class="icon" data-icon="plus" style="flex-shrink:0;width:20px;height:20px;color:#9CA3AF;"></span>
+        <div><strong style="font-size:13px;font-weight:600;display:block;">Drop Excel file here or click to browse</strong><small style="font-size:11px;color:#9CA3AF;">.xlsx · .xls · .csv · .pdf</small></div>
       </div>
       <div class="import-file-row">
         <span><small>Selected file</small><strong>${fileLabel}</strong></span>
@@ -2088,21 +2086,32 @@ function applyImportedMasterPrototype() {
 }
 
 function annualMasterBuilderView() {
-  if (activeMasterStep === "requests") activeMasterStep = "coverage";
-  return `
-    ${masterImportGateway()}
-    <div class="master-builder-layout ${activeMasterStep === "finalize" ? "finalize-mode" : ""}">
-      <section class="panel builder-steps master-build-steps">
-        ${masterBuildSteps().map(([id, number, title, copy]) => `<button class="builder-step ${activeMasterStep===id?"active":""} ${masterStepComplete(id)?"complete":""}" data-master-step="${id}">
-          <span class="step-number">${masterStepComplete(id) ? '<span class="icon" data-icon="check"></span>' : number}</span>
-          <span><strong>${title}</strong><small>${copy}</small></span>
-          <span class="icon step-chevron" data-icon="chevron"></span>
-        </button>`).join("")}
-      </section>
-      <div class="master-builder-main">
-        ${masterGuidedStepPanel(activeMasterStep)}
-      </div>
+  const hasData = masterResidents.length > 0;
+  const fileLabel = masterImportState.fileName ? escapeHtml(masterImportState.fileName) : null;
+  if (!hasData) {
+    return `<div class="panel" style="padding:56px 24px;text-align:center;">
+      <input class="master-import-file" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden>
+      <span class="icon" data-icon="grid" style="display:block;margin:0 auto 12px;width:28px;height:28px;color:#D1D5DB;"></span>
+      <p style="font-size:14px;font-weight:600;margin:0 0 4px;color:var(--text);">Upload your Excel master schedule to get started</p>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Import your existing workbook — residents, blocks, and rotations map automatically</p>
+      <button class="primary-button trigger-master-import"><span class="icon" data-icon="clipboard"></span> Import master schedule</button>
     </div>`;
+  }
+  return `<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+    <input class="master-import-file" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden>
+    <button class="secondary-button compact trigger-master-import"><span class="icon" data-icon="clipboard"></span> Import master schedule</button>
+    ${fileLabel ? `<span style="font-size:12px;color:var(--text-secondary);">${fileLabel}</span>` : ""}
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+      <div style="display:flex;gap:2px;">
+        ${["PGY-1","PGY-2","PGY-3","All PGYs"].map(p => `<button class="secondary-button compact" data-master-pgy="${p}" style="${activeMasterPgy===p?"background:var(--accent);color:#fff;border-color:var(--accent);":""}">${p==="All PGYs"?"All":p}</button>`).join("")}
+      </div>
+      <button class="secondary-button compact validate-master"><span class="icon" data-icon="alert"></span> Validate</button>
+      <button class="primary-button compact save-master"><span class="icon" data-icon="check"></span> Save master</button>
+    </div>
+  </div>
+  <section class="panel" style="overflow-x:auto;">
+    ${editableMasterGridHtml()}
+  </section>`;
 }
 
 function annualServiceDefinitions() {
