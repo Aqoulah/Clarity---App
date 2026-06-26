@@ -1430,70 +1430,779 @@ function serviceRosterTarget(service) {
   return Math.max(1, roleTarget, laneTarget);
 }
 
-function generateServiceDraft(service, block) {
-  const linked = masterRowsForService(service, block);
-  const target = serviceRosterTarget(service);
-  const selected = [...linked];
-  const used = new Set(selected.map((item) => item.index));
-  for (let offset = 0; selected.length < target && offset < masterResidents.length; offset++) {
-    const index = (block * 3 + configuredServices().indexOf(service) * 5 + offset) % masterResidents.length;
-    if (used.has(index)) continue;
-    const assignment = masterAssignments[index]?.[block - 1]?.rotation;
-    if (["Vacation"].includes(assignment)) continue;
-    selected.push({ resident: masterResidents[index], index, rotation: assignment, supplemental: true });
-    used.add(index);
-  }
-  return selected.slice(0, Math.max(target, linked.length)).map((item, rowIndex, roster) => ({
-    id: `${block}-${service}-${item.resident.id}`,
-    name: item.resident.name,
-    role: `${item.resident.pgy.replace("PGY-", "P")} · ${item.supplemental ? "Eligible pool" : item.rotation}`,
-    source: item.supplemental ? `Eligible supplement · master: ${item.rotation}` : `Master schedule · ${item.rotation}`,
-    masterLinked: !item.supplemental,
-    shifts: generateServiceBlockShifts(service, item.resident, rowIndex, roster.length)
-  }));
-}
 
-function generateServiceBlockShifts(service, resident, rowIndex, rosterSize) {
-  const settings = serviceScheduleSettings[service] || serviceScheduleSettings.Purple;
-  const enabledShifts = ensureServiceBuilderConfig(service).shifts;
-  const distribution = serviceDistributionSettings[service] || { cadence: "Weekly", nightHandoff: "Staggered stretches" };
-  const configuredNights = enabledShifts.includes("NIGHT") || enabledShifts.includes("WKND-N");
-  const hasNights = configuredNights && distribution.nightHandoff !== "Chief assigns manually";
-  const nightLength = distribution.nightHandoff === "Fixed night resident" ? 28 : distribution.nightHandoff === "Weekly switch" ? 7 : Math.max(3, Math.min(5, Math.floor(28 / Math.max(1, rosterSize))));
-  const nightStart = !hasNights ? -1 : distribution.nightHandoff === "Fixed night resident" ? (rowIndex === 0 ? 0 : -1) : distribution.nightHandoff === "Weekly switch" ? (rowIndex * 7) % 28 : Math.floor((rowIndex * 28) / Math.max(1, rosterSize));
-  const goldenWeekend = rowIndex % 4;
-  const profile = residentProfiles[resident.name];
-  const lanes = ensureServiceCoverageLanes(service);
-  const dayLanes = lanes.filter((lane) => !/night/i.test(lane.name));
-  const nightLane = lanes.find((lane) => /night/i.test(lane.name));
-  const assignLane = (entry, dayIndex, night = false) => {
-    const week = Math.floor(dayIndex / 7);
-    const rotationStep = distribution.cadence === "Daily" ? dayIndex : distribution.cadence === "Every 2 weeks" ? Math.floor(dayIndex / 14) : distribution.cadence === "Keep fixed" ? 0 : week;
-    const lane = night ? nightLane : dayLanes[(rowIndex + rotationStep) % Math.max(1, dayLanes.length)];
-    return { ...entry, lane: lane?.name || lanes[0]?.name || "" };
-  };
-  return Array.from({ length: 28 }, (_, dayIndex) => {
-    const day = dayIndex % 7;
-    const week = Math.floor(dayIndex / 7);
-    if (service === "Jeopardy") {
-      const labels = ["CLINIC CALL", "J1", "J2", "J3", "CROSSOVER"];
-      return assignLane(makeScheduleEntry(day < 5 ? labels[(dayIndex + rowIndex) % labels.length] : rowIndex % 2 ? "J2" : "OFF", dayIndex), dayIndex);
+// ── Purple/Orange real scheduling engine (auto-inserted) ───────────────────
+// ============================================================
+// CLARITY SCHEDULE — Purple / Orange Real Generation Engine
+// Replace the existing generateServiceDraft() and
+// generateServiceBlockShifts() functions in app.js with
+// this code. Insert it just ABOVE the existing
+// generateServiceDraft function (around line 1433).
+// Then rename the old generateServiceDraft to
+// generateServiceDraftGeneric and call this one for
+// Purple and Orange.
+// ============================================================
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const FLOOR_SERVICES = ["Purple", "Orange"];
+
+// Day-of-week indices (0 = Mon … 4 = Fri, 5 = Sat, 6 = Sun)
+const MON = 0, TUE = 1, WED = 2, THU = 3, FRI = 4, SAT = 5, SUN = 6;
+
+// Block is always 28 calendar days (4 weeks of 7 days each)
+const BLOCK_DAYS = 28;
+
+// ── Protected-time helpers ────────────────────────────────────────────────────
+
+/**
+ * Returns a Set of day-indices (0–27) that are hard-blocked for a resident.
+ * Sources: approved requests, clinic pattern, didactics, ITE, post-call
+ * carryover. Pending requests add a soft warning flag only (not a hard block).
+ */
+function buildProtectedSet(residentName, blockIndex) {
+  const blocked = new Set();
+  const softWarnings = new Set();
+  const profile = residentProfiles[residentName] || {};
+  const blockNumber = blockIndex + 1;
+
+  // ── Approved requests ──────────────────────────────────────────────────────
+  const approved = residentRequests.filter(
+    (r) => r.resident === residentName &&
+            r.block === blockNumber &&
+            r.status === "approved"
+  );
+  approved.forEach((req) => {
+    // Map request detail strings to day indices when possible
+    // (In a real system these would be exact dates; here we use
+    //  week-level approximations from the detail string.)
+    if (/vacation|pto|day off/i.test(req.type)) {
+      // Mark all days in the request window — simplified to full week
+      for (let d = 0; d < BLOCK_DAYS; d++) blocked.add(d);
     }
-    if (service === "Night Senior") {
-      const isNightStretch = nightStart >= 0 && dayIndex >= nightStart && dayIndex < nightStart + nightLength;
-      return assignLane(makeScheduleEntry(isNightStretch ? (day > 4 ? "1815–0700" : "1700–0700") : nightStart >= 0 && dayIndex === nightStart + nightLength ? "POST CALL" : "OFF", dayIndex), dayIndex, isNightStretch);
-    }
-    if (hasNights && nightStart >= 0 && dayIndex >= nightStart && dayIndex < nightStart + nightLength) return assignLane(makeScheduleEntry(day > 4 && enabledShifts.includes("WKND-N") ? "1815–0700" : "1700–0700", dayIndex), dayIndex, true);
-    if (hasNights && nightStart >= 0 && dayIndex === nightStart + nightLength) return makeScheduleEntry("POST CALL", dayIndex);
-    if (week === goldenWeekend && day > 4) return makeScheduleEntry("OFF", dayIndex);
-    if (profile && day === 2 && week % 2 === 0) return makeScheduleEntry("DIDACTIC", dayIndex);
-    if (profile && day === (rowIndex % 5)) return makeScheduleEntry("CLINIC", dayIndex);
-    if (day === 5) return assignLane(makeScheduleEntry(enabledShifts.includes("LONG") && rowIndex % 2 ? "0630–1900" : enabledShifts.includes("SHORT") ? "0630–1600" : "OFF", dayIndex), dayIndex);
-    if (day === 6) return assignLane(makeScheduleEntry(enabledShifts.includes("LONG") && rowIndex % 2 === 0 ? "0630–1900" : "OFF", dayIndex), dayIndex);
-    return assignLane(makeScheduleEntry("0630–1700", dayIndex), dayIndex);
   });
+
+  // ── Pending requests — soft warning only ──────────────────────────────────
+  const pending = residentRequests.filter(
+    (r) => r.resident === residentName &&
+            r.block === blockNumber &&
+            r.status === "pending"
+  );
+  pending.forEach(() => {
+    // We don't know exact days from sample data; mark week 2 as a soft warning
+    // In production this would use exact requested dates
+    for (let d = 7; d < 14; d++) softWarnings.add(d);
+  });
+
+  // ── Clinic days ───────────────────────────────────────────────────────────
+  // clinic is stored as an array per block or a string like "Friday PM"
+  const clinicEntry = Array.isArray(profile.clinic)
+    ? profile.clinic[blockIndex]
+    : profile.clinic;
+  if (clinicEntry && clinicEntry !== "None") {
+    const clinicDow = clinicDayOfWeek(clinicEntry); // 0-6
+    if (clinicDow !== null) {
+      for (let week = 0; week < 4; week++) {
+        blocked.add(week * 7 + clinicDow);
+      }
+    }
+  }
+
+  // ── Didactics ─────────────────────────────────────────────────────────────
+  // Most residents have Friday didactics; some have Wednesday
+  const didacticEntry = profile.didactic || "Friday";
+  const didacticDow = clinicDayOfWeek(didacticEntry);
+  if (didacticDow !== null) {
+    for (let week = 0; week < 4; week++) {
+      blocked.add(week * 7 + didacticDow);
+    }
+  }
+
+  return { blocked, softWarnings };
 }
 
+/**
+ * Parse day-of-week from strings like "Friday PM", "Wednesday AM",
+ * "Tues clinic", etc. Returns 0-6 (Mon-Sun) or null if not parseable.
+ */
+function clinicDayOfWeek(str = "") {
+  const s = str.toLowerCase();
+  if (s.includes("mon")) return MON;
+  if (s.includes("tue")) return TUE;
+  if (s.includes("wed")) return WED;
+  if (s.includes("thu")) return THU;
+  if (s.includes("fri")) return FRI;
+  if (s.includes("sat")) return SAT;
+  if (s.includes("sun")) return SUN;
+  return null;
+}
+
+// ── Night stretch assignment ──────────────────────────────────────────────────
+
+/**
+ * Given a roster of residents (with their blocked day sets), assign night
+ * stretches following the rules:
+ *   - Target 6 consecutive nights; allow 5 if needed.
+ *   - Never fewer than 3 consecutive nights.
+ *   - Never isolated single nights.
+ *   - Post-call day is added immediately after the final night.
+ *   - Check prior/next block for transition safety.
+ *
+ * Returns an array of { residentName, startDay, length, postCallDay }
+ * representing the night stretch for each intern, plus a postCallDays Set
+ * covering all auto-generated post-call days across the roster.
+ */
+function assignNightStretches(roster, protectedMaps, block) {
+  const assignments = [];
+  const postCallDays = new Set();
+  const TARGET_LENGTH = 6;
+  const MIN_LENGTH = 5;
+
+  // Sort roster so the resident with the safest transition goes first
+  const sorted = [...roster].sort((a, b) => {
+    const aSafe = transitionSafetyScore(a.name, block);
+    const bSafe = transitionSafetyScore(b.name, block);
+    return bSafe - aSafe; // higher score = safer = assign nights first
+  });
+
+  // Track which days are already claimed by a night stretch
+  const claimedNightDays = new Set();
+
+  sorted.forEach((intern, internIndex) => {
+    const { blocked } = protectedMaps[intern.name] || { blocked: new Set() };
+
+    // Find the best contiguous window of TARGET_LENGTH nights that doesn't
+    // overlap protected time or already-claimed nights
+    let bestStart = -1;
+
+    // Prefer windows that start in week 1 for earlier interns, week 2-3 later
+    // (stagger so all interns don't have nights at same time)
+    const preferredStart = Math.floor((internIndex * BLOCK_DAYS) / Math.max(1, sorted.length));
+
+    // Scan from preferred start, wrapping around
+    for (let attempt = 0; attempt < BLOCK_DAYS; attempt++) {
+      const start = (preferredStart + attempt) % (BLOCK_DAYS - TARGET_LENGTH + 1);
+      if (isValidNightWindow(start, TARGET_LENGTH, blocked, claimedNightDays)) {
+        bestStart = start;
+        break;
+      }
+    }
+
+    // If no 6-night window found, try 5-night
+    if (bestStart === -1) {
+      for (let attempt = 0; attempt < BLOCK_DAYS; attempt++) {
+        const start = (preferredStart + attempt) % (BLOCK_DAYS - MIN_LENGTH + 1);
+        if (isValidNightWindow(start, MIN_LENGTH, blocked, claimedNightDays)) {
+          bestStart = start;
+          break;
+        }
+      }
+    }
+
+    if (bestStart === -1) {
+      // Could not find a valid night window — flag gap; skip this intern for nights
+      assignments.push({ name: intern.name, startDay: -1, length: 0, postCallDay: -1, gap: true });
+      return;
+    }
+
+    const length = isValidNightWindow(bestStart, TARGET_LENGTH, blocked, claimedNightDays)
+      ? TARGET_LENGTH : MIN_LENGTH;
+    const postCallDay = bestStart + length;
+
+    // Mark claimed days
+    for (let d = bestStart; d < bestStart + length; d++) claimedNightDays.add(d);
+    if (postCallDay < BLOCK_DAYS) {
+      claimedNightDays.add(postCallDay);
+      postCallDays.add(`${intern.name}:${postCallDay}`);
+    }
+
+    assignments.push({ name: intern.name, startDay: bestStart, length, postCallDay });
+  });
+
+  return { nightAssignments: assignments, postCallDays };
+}
+
+function isValidNightWindow(start, length, blocked, claimed) {
+  if (start + length > BLOCK_DAYS) return false;
+  // Post-call day must also be available (or at end of block)
+  const postCall = start + length;
+  for (let d = start; d < start + length; d++) {
+    if (blocked.has(d) || claimed.has(d)) return false;
+  }
+  if (postCall < BLOCK_DAYS && (blocked.has(postCall) || claimed.has(postCall))) return false;
+  return true;
+}
+
+/**
+ * Higher = safer transition.
+ * Checks if the intern is coming from / going to an elective/non-inpatient block.
+ */
+function transitionSafetyScore(residentName, block) {
+  const index = residentMasterIndex(residentName);
+  const prev = masterAssignments[index]?.[block - 2]?.rotation || "";
+  const next = masterAssignments[index]?.[block]?.rotation || "";
+  const safe = /elective|vacation|research|clinic|advo|board/i;
+  return (safe.test(prev) ? 1 : 0) + (safe.test(next) ? 1 : 0);
+}
+
+// ── Weekend fairness assignment ───────────────────────────────────────────────
+
+/**
+ * Assigns weekend roles (LONG, SHORT, NIGHT) for all 4 weekends.
+ * Fairness targets per intern per block:
+ *   1 golden weekend (both Sat + Sun off)
+ *   1 Saturday only off
+ *   1 Sunday only off
+ *   1 full working weekend (both days worked)
+ * Within a working weekend: alternate LONG and SHORT (never LONG+LONG).
+ *
+ * Returns weekendMap: Map<residentName, [{week, sat, sun}]>
+ *   where sat/sun = "LONG" | "SHORT" | "OFF" | "NIGHT"
+ */
+function assignWeekendFairness(roster, nightAssignments, protectedMaps) {
+  // Build a night-weekend map: which residents are on nights during each weekend
+  const onNightsDuring = (residentName, week) => {
+    const na = nightAssignments.find((a) => a.name === residentName);
+    if (!na || na.startDay === -1) return false;
+    const satDay = week * 7 + SAT;
+    const sunDay = week * 7 + SUN;
+    return (satDay >= na.startDay && satDay < na.startDay + na.length) ||
+           (sunDay >= na.startDay && sunDay < na.startDay + na.length);
+  };
+
+  // Fairness counters per intern
+  const counters = {};
+  roster.forEach((intern) => {
+    counters[intern.name] = {
+      golden: 0, satOff: 0, sunOff: 0, fullWork: 0,
+      satsWorked: 0, sunsWorked: 0,
+      lastRole: null // track LONG/SHORT alternation
+    };
+  });
+
+  const weekendMap = {};
+  roster.forEach((intern) => { weekendMap[intern.name] = []; });
+
+  // 4 weekends
+  for (let week = 0; week < 4; week++) {
+    const satDay = week * 7 + SAT;
+    const sunDay = week * 7 + SUN;
+
+    // Sort interns: those who most need a golden weekend first
+    const sorted = [...roster].sort((a, b) => {
+      const aC = counters[a.name];
+      const bC = counters[b.name];
+      // Prioritise residents without a golden weekend yet
+      if (aC.golden !== bC.golden) return aC.golden - bC.golden;
+      // Then least weekend burden
+      return (aC.satsWorked + aC.sunsWorked) - (bC.satsWorked + bC.sunsWorked);
+    });
+
+    const satAssigned = new Map(); // residentName -> role
+    const sunAssigned = new Map();
+
+    // Decide who gets golden weekend (off both days) — one per weekend maximum
+    const goldenCandidate = sorted.find((intern) => {
+      const c = counters[intern.name];
+      const { blocked } = protectedMaps[intern.name] || { blocked: new Set() };
+      return c.golden === 0 &&
+             !onNightsDuring(intern.name, week) &&
+             !blocked.has(satDay) &&
+             !blocked.has(sunDay);
+    });
+
+    if (goldenCandidate) {
+      satAssigned.set(goldenCandidate.name, "OFF");
+      sunAssigned.set(goldenCandidate.name, "OFF");
+      counters[goldenCandidate.name].golden++;
+    }
+
+    // Assign SHORT and LONG to the remaining available interns for Saturday
+    const satNeedsLong = !Array.from(satAssigned.values()).includes("LONG");
+    const satNeedsShort = !Array.from(satAssigned.values()).includes("SHORT");
+
+    sorted.forEach((intern) => {
+      if (satAssigned.has(intern.name)) return;
+      const { blocked } = protectedMaps[intern.name] || { blocked: new Set() };
+      if (onNightsDuring(intern.name, week)) {
+        satAssigned.set(intern.name, "NIGHT");
+        return;
+      }
+      if (blocked.has(satDay)) {
+        satAssigned.set(intern.name, "PROTECTED");
+        return;
+      }
+      const c = counters[intern.name];
+      if (satNeedsLong && c.lastRole !== "LONG") {
+        satAssigned.set(intern.name, "LONG");
+        counters[intern.name].lastRole = "LONG";
+        counters[intern.name].satsWorked++;
+      } else if (satNeedsShort) {
+        satAssigned.set(intern.name, "SHORT");
+        counters[intern.name].lastRole = "SHORT";
+        counters[intern.name].satsWorked++;
+      } else {
+        satAssigned.set(intern.name, "OFF");
+        counters[intern.name].satOff++;
+      }
+    });
+
+    // Same for Sunday — alternate LONG/SHORT from Saturday
+    const sunNeedsLong = !Array.from(sunAssigned.values()).includes("LONG");
+    const sunNeedsShort = !Array.from(sunAssigned.values()).includes("SHORT");
+
+    sorted.forEach((intern) => {
+      if (sunAssigned.has(intern.name)) return;
+      const { blocked } = protectedMaps[intern.name] || { blocked: new Set() };
+      if (onNightsDuring(intern.name, week)) {
+        sunAssigned.set(intern.name, "NIGHT");
+        return;
+      }
+      if (blocked.has(sunDay)) {
+        sunAssigned.set(intern.name, "PROTECTED");
+        return;
+      }
+      const satRole = satAssigned.get(intern.name);
+      const c = counters[intern.name];
+      // Alternate from Saturday role to avoid LONG+LONG or SHORT+SHORT
+      if (satRole === "LONG" && sunNeedsShort) {
+        sunAssigned.set(intern.name, "SHORT");
+        counters[intern.name].sunsWorked++;
+        counters[intern.name].fullWork++;
+      } else if (satRole === "SHORT" && sunNeedsLong) {
+        sunAssigned.set(intern.name, "LONG");
+        counters[intern.name].sunsWorked++;
+        counters[intern.name].fullWork++;
+      } else if (satRole === "OFF") {
+        // Give them Sunday off too — or work if coverage needs it
+        sunAssigned.set(intern.name, "OFF");
+        counters[intern.name].sunOff++;
+      } else {
+        sunAssigned.set(intern.name, "OFF");
+        counters[intern.name].sunOff++;
+      }
+    });
+
+    // Record in weekendMap
+    roster.forEach((intern) => {
+      weekendMap[intern.name].push({
+        week,
+        sat: satAssigned.get(intern.name) || "OFF",
+        sun: sunAssigned.get(intern.name) || "OFF"
+      });
+    });
+  }
+
+  return { weekendMap, counters };
+}
+
+// ── Shift value helpers ───────────────────────────────────────────────────────
+
+function floorNightShiftValue(isWeekend) {
+  return isWeekend ? "1815–0700" : "1700–0700";
+}
+
+function weekendRoleValue(role, service) {
+  if (role === "LONG") return "0630–1900";
+  if (role === "SHORT") return "0630–1600";
+  if (role === "NIGHT") return "1815–0700";
+  if (role === "PROTECTED") return "PROTECTED";
+  return "OFF";
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
+
+/**
+ * Generates a real Purple or Orange schedule draft following the rules in
+ * the workflow and coding specification documents.
+ *
+ * Replaces generateServiceDraft() for Purple and Orange services.
+ */
+function generateFloorScheduleDraft(service, block) {
+  if (!FLOOR_SERVICES.includes(service)) {
+    // Fall through to the generic generator for other services
+    return generateServiceDraftGeneric(service, block);
+  }
+
+  const blockIndex = block - 1;
+
+  // ── Step 1: Pull core PGY-1 interns from master schedule ─────────────────
+  const linked = masterRowsForService(service, block);
+  const coreInterns = linked.filter(
+    (item) => item.resident.pgy === "PGY-1" || item.resident.pgy === "PGY1"
+  );
+
+  // ── Step 2: Check team size ───────────────────────────────────────────────
+  const MIN_TEAM = 4;
+  const TARGET_TEAM = 5;
+  const hasShortageAlert = coreInterns.length < MIN_TEAM;
+
+  // If below minimum, supplement from eligible pool (outside rotators)
+  const roster = [...coreInterns];
+  if (roster.length < MIN_TEAM) {
+    const used = new Set(roster.map((item) => item.index));
+    for (let offset = 0; roster.length < MIN_TEAM && offset < masterResidents.length; offset++) {
+      const index = (block * 7 + configuredServices().indexOf(service) * 11 + offset) % masterResidents.length;
+      if (used.has(index)) continue;
+      const rotation = masterAssignments[index]?.[blockIndex]?.rotation || "";
+      if (/vacation/i.test(rotation)) continue;
+      roster.push({
+        resident: masterResidents[index],
+        index,
+        rotation,
+        supplemental: true,
+        source: "OUTSIDE_ROTATOR"
+      });
+      used.add(index);
+    }
+  }
+
+  if (!roster.length) return generateServiceDraftGeneric(service, block);
+
+  // ── Step 3: Build protected-time maps ─────────────────────────────────────
+  const protectedMaps = {};
+  roster.forEach((item) => {
+    protectedMaps[item.resident.name] = buildProtectedSet(item.resident.name, blockIndex);
+  });
+
+  // ── Step 4: Assign night stretches FIRST ─────────────────────────────────
+  const { nightAssignments, postCallDays } = assignNightStretches(
+    roster.map((item) => item.resident),
+    protectedMaps,
+    block
+  );
+
+  // Merge post-call days into each resident's protected set
+  postCallDays.forEach((key) => {
+    const [name, dayStr] = key.split(":");
+    protectedMaps[name]?.blocked.add(Number(dayStr));
+  });
+
+  // ── Step 5: Assign weekend fairness ──────────────────────────────────────
+  const { weekendMap, counters } = assignWeekendFairness(
+    roster.map((item) => item.resident),
+    nightAssignments,
+    protectedMaps
+  );
+
+  // ── Step 6: Build shift arrays for each intern ────────────────────────────
+  const draft = roster.map((item, rowIndex) => {
+    const intern = item.resident;
+    const nightAssign = nightAssignments.find((a) => a.name === intern.name);
+    const internWeekends = weekendMap[intern.name] || [];
+    const { blocked, softWarnings } = protectedMaps[intern.name] || { blocked: new Set(), softWarnings: new Set() };
+    const source = item.supplemental ? "OUTSIDE_ROTATOR" : "CORE";
+
+    const shifts = Array.from({ length: BLOCK_DAYS }, (_, dayIndex) => {
+      const week = Math.floor(dayIndex / 7);
+      const dow = dayIndex % 7; // 0=Mon … 6=Sun
+      const isWeekend = dow >= SAT;
+
+      // Post-call day
+      if (nightAssign && dayIndex === nightAssign.postCallDay) {
+        return makeFloorEntry("POST CALL", dayIndex, source, true, false);
+      }
+
+      // Night stretch
+      if (nightAssign && nightAssign.startDay >= 0 &&
+          dayIndex >= nightAssign.startDay &&
+          dayIndex < nightAssign.startDay + nightAssign.length) {
+        return makeFloorEntry(floorNightShiftValue(isWeekend), dayIndex, source, false, false, "NIGHT");
+      }
+
+      // Weekend days
+      if (isWeekend) {
+        const wknd = internWeekends[week];
+        if (!wknd) return makeFloorEntry("OFF", dayIndex, source, false, false);
+        const role = dow === SAT ? wknd.sat : wknd.sun;
+        const value = weekendRoleValue(role, service);
+        const isProtected = role === "PROTECTED";
+        return makeFloorEntry(value, dayIndex, source, isProtected, false, role);
+      }
+
+      // Weekday protected time
+      if (blocked.has(dayIndex)) {
+        // Determine what kind of protected event this is
+        const profile = residentProfiles[intern.name] || {};
+        const clinicEntry = Array.isArray(profile.clinic)
+          ? profile.clinic[blockIndex]
+          : (profile.clinic || "");
+        const clinicDow = clinicDayOfWeek(clinicEntry);
+        if (clinicDow !== null && dow === clinicDow) {
+          return makeFloorEntry("CLINIC", dayIndex, source, true, false);
+        }
+        const didacticEntry = profile.didactic || "Friday";
+        const didacticDow = clinicDayOfWeek(didacticEntry);
+        if (didacticDow !== null && dow === didacticDow) {
+          return makeFloorEntry("DIDACTIC", dayIndex, source, true, false);
+        }
+        return makeFloorEntry("PROTECTED", dayIndex, source, true, false);
+      }
+
+      // Soft warning — pending request
+      if (softWarnings.has(dayIndex)) {
+        return makeFloorEntry("0630–1700", dayIndex, source, false, false, "", true);
+      }
+
+      // Standard weekday day shift
+      return makeFloorEntry("0630–1700", dayIndex, source, false, false);
+    });
+
+    // Build fairness summary for display
+    const fc = counters[intern.name] || {};
+    const nightCount = nightAssign?.length || 0;
+    const fairnessSummary = [
+      `${nightCount} night${nightCount !== 1 ? "s" : ""}`,
+      `${fc.golden || 0} golden wknd`,
+      `${fc.satsWorked || 0} Sat worked`,
+      `${fc.sunsWorked || 0} Sun worked`
+    ].join(" · ");
+
+    return {
+      id: `${block}-${service}-${intern.id}`,
+      name: intern.name,
+      role: `${intern.pgy.replace("PGY-", "P")} · ${item.supplemental ? "Outside rotator" : item.rotation || service}`,
+      source,
+      sourceLabel: source === "OUTSIDE_ROTATOR" ? "Outside rotator" : "Master schedule",
+      masterLinked: !item.supplemental,
+      pgy: intern.pgy,
+      nightStretch: nightAssign && nightAssign.startDay >= 0
+        ? { start: nightAssign.startDay, end: nightAssign.startDay + nightAssign.length - 1, postCall: nightAssign.postCallDay }
+        : null,
+      fairnessSummary,
+      hasShortageAlert: hasShortageAlert && rowIndex === 0,
+      nightGap: nightAssign?.gap || false,
+      shifts
+    };
+  });
+
+  return draft;
+}
+
+/**
+ * Creates a shift entry with all required metadata fields.
+ * pendingRequest = true adds a soft yellow warning badge.
+ */
+function makeFloorEntry(value, dayIndex, source = "CORE", isProtected = false, overridden = false, role = "", pendingRequest = false) {
+  const isWeekend = dayIndex % 7 >= SAT;
+  const isNight = /^\d{4}–07/.test(value) || value === "POST CALL";
+  const isOff = value === "OFF" || value === "POST CALL";
+
+  let sourceDisplay;
+  if (isProtected) {
+    sourceDisplay = value === "CLINIC" ? "Resident clinic profile"
+      : value === "DIDACTIC" ? "Institution didactics"
+      : value === "PROTECTED" ? "Approved request / protected event"
+      : "Protected time";
+  } else if (pendingRequest) {
+    sourceDisplay = "⚠ Pending request — chief review needed";
+  } else if (isNight) {
+    sourceDisplay = "Night stretch — generated";
+  } else if (isOff) {
+    sourceDisplay = role === "OFF" && isWeekend ? "Golden or scheduled weekend off" : "Generated";
+  } else {
+    sourceDisplay = source === "OUTSIDE_ROTATOR"
+      ? "Outside rotator — master schedule supplement"
+      : "Master schedule · " + (isWeekend ? "weekend coverage" : "weekday coverage");
+  }
+
+  return {
+    value,
+    lane: isNight ? "Night" : isWeekend ? "Weekend" : "Day",
+    source: sourceDisplay,
+    sourceCode: source,
+    protected: isProtected,
+    overridden,
+    role: role || (isNight ? "NIGHT" : isOff ? "OFF" : isWeekend ? "WEEKEND" : "DAY"),
+    pendingWarning: pendingRequest,
+    note: pendingRequest
+      ? "Pending request on this date — approve or decline before publishing"
+      : isWeekend && !isNight && !isOff
+      ? `Weekend ${value === "0630–1900" ? "long call" : "short call"}`
+      : isNight
+      ? "Night stretch — post-call day follows"
+      : ""
+  };
+}
+
+// ── Validation engine for Purple / Orange ─────────────────────────────────────
+
+/**
+ * Runs all hard and soft validations on a Purple/Orange draft.
+ * Returns { hardAlerts, softWarnings, coverageGaps, fairnessFlags, canPublish }
+ */
+function validateFloorDraft(draft, service, block) {
+  const hardAlerts = [];
+  const softWarnings = [];
+  const coverageGaps = [];
+  const fairnessFlags = [];
+
+  // H1: Team size
+  const coreCount = draft.filter((r) => r.sourceCode === "CORE").length;
+  if (coreCount < 4) {
+    hardAlerts.push({
+      code: "TEAM_TOO_SMALL",
+      message: `${service} has only ${coreCount} core interns. Minimum is 4. Add outside rotators before publishing.`,
+      severity: "hard"
+    });
+  }
+
+  draft.forEach((resident) => {
+    // H2: Post-call violation
+    resident.shifts.forEach((shift, dayIndex) => {
+      if (shift.value === "POST CALL") {
+        const nextDay = resident.shifts[dayIndex + 1];
+        if (nextDay && nextDay.value !== "OFF" && nextDay.value !== "POST CALL" && !nextDay.protected) {
+          hardAlerts.push({
+            code: "POST_CALL_VIOLATION",
+            message: `${resident.name}: assignment on day ${dayIndex + 2} immediately after post-call day.`,
+            severity: "hard",
+            residentName: resident.name,
+            dayIndex: dayIndex + 1
+          });
+        }
+      }
+    });
+
+    // H3: Night stretch not consecutive (gap detection)
+    if (resident.nightGap) {
+      hardAlerts.push({
+        code: "NIGHT_GAP",
+        message: `${resident.name}: no valid night stretch window found. Night coverage gap exists.`,
+        severity: "hard",
+        residentName: resident.name
+      });
+    }
+
+    // H4: Protected time conflict
+    resident.shifts.forEach((shift, dayIndex) => {
+      if (shift.protected && shift.overridden) {
+        hardAlerts.push({
+          code: "PROTECTED_TIME_OVERRIDE",
+          message: `${resident.name}: assignment on a protected date (day ${dayIndex + 1}).`,
+          severity: "hard",
+          residentName: resident.name,
+          dayIndex
+        });
+      }
+    });
+
+    // S1: Night stretch length warnings
+    if (resident.nightStretch) {
+      const len = resident.nightStretch.end - resident.nightStretch.start + 1;
+      if (len < 3) {
+        softWarnings.push({
+          code: "NIGHT_TOO_SHORT",
+          message: `${resident.name}: only ${len} consecutive nights (minimum 3).`,
+          residentName: resident.name
+        });
+      }
+      if (len > 6) {
+        softWarnings.push({
+          code: "NIGHT_TOO_LONG",
+          message: `${resident.name}: ${len} consecutive nights exceeds target of 6.`,
+          residentName: resident.name
+        });
+      }
+    }
+
+    // S2: Pending request warning
+    if (resident.shifts.some((s) => s.pendingWarning)) {
+      softWarnings.push({
+        code: "PENDING_REQUEST",
+        message: `${resident.name}: has a pending request on a scheduled date. Approve or decline before publishing.`,
+        residentName: resident.name
+      });
+    }
+  });
+
+  // H5: Coverage gaps — check each weekday has at least MIN_DAILY_COVERAGE interns
+  const MIN_DAILY_COVERAGE = 2;
+  for (let dayIndex = 0; dayIndex < BLOCK_DAYS; dayIndex++) {
+    const dow = dayIndex % 7;
+    if (dow >= SAT) continue; // weekends handled separately
+    const working = draft.filter((r) => {
+      const s = r.shifts[dayIndex];
+      return s && !s.protected && s.value !== "OFF" && s.value !== "POST CALL" && !s.value.includes("NIGHT") && !/^\d{4}–07/.test(s.value);
+    });
+    if (working.length < MIN_DAILY_COVERAGE) {
+      coverageGaps.push({
+        code: "WEEKDAY_COVERAGE_GAP",
+        message: `Day ${dayIndex + 1} (Week ${Math.floor(dayIndex / 7) + 1}, ${["Mon","Tue","Wed","Thu","Fri"][dow]}): only ${working.length} intern(s) available. Minimum is ${MIN_DAILY_COVERAGE}.`,
+        dayIndex,
+        severity: working.length === 0 ? "hard" : "soft"
+      });
+    }
+  }
+
+  // Weekend gaps — each weekend needs LONG + SHORT
+  for (let week = 0; week < 4; week++) {
+    [SAT, SUN].forEach((dow) => {
+      const dayIndex = week * 7 + dow;
+      const longs = draft.filter((r) => r.shifts[dayIndex]?.role === "LONG");
+      const shorts = draft.filter((r) => r.shifts[dayIndex]?.role === "SHORT");
+      if (longs.length === 0) {
+        hardAlerts.push({
+          code: "WEEKEND_LONG_MISSING",
+          message: `Week ${week + 1} ${dow === SAT ? "Saturday" : "Sunday"}: no LONG intern assigned.`,
+          severity: "hard",
+          dayIndex
+        });
+      }
+      if (shorts.length === 0) {
+        hardAlerts.push({
+          code: "WEEKEND_SHORT_MISSING",
+          message: `Week ${week + 1} ${dow === SAT ? "Saturday" : "Sunday"}: no SHORT intern assigned.`,
+          severity: "hard",
+          dayIndex
+        });
+      }
+    });
+  }
+
+  // S3: Fairness — golden weekend
+  draft.forEach((r) => {
+    const goldenWeekends = [];
+    for (let week = 0; week < 4; week++) {
+      const sat = r.shifts[week * 7 + SAT];
+      const sun = r.shifts[week * 7 + SUN];
+      if (sat?.value === "OFF" && sun?.value === "OFF") goldenWeekends.push(week + 1);
+    }
+    if (goldenWeekends.length === 0) {
+      fairnessFlags.push({
+        code: "NO_GOLDEN_WEEKEND",
+        message: `${r.name}: no golden weekend in this block.`,
+        residentName: r.name,
+        severity: "soft"
+      });
+    }
+  });
+
+  const canPublish = hardAlerts.length === 0 &&
+    coverageGaps.filter((g) => g.severity === "hard").length === 0;
+
+  return { hardAlerts, softWarnings, coverageGaps, fairnessFlags, canPublish };
+}
+
+// ── Hook into the existing app ────────────────────────────────────────────────
+// Rename the existing generateServiceDraft to generateServiceDraftGeneric,
+// then replace calls to generateServiceDraft with generateServiceDraft (below).
+
+// Store a reference to the old generic generator BEFORE overwriting
+const generateServiceDraftGeneric = generateServiceDraft;
+
+/**
+ * New generateServiceDraft — routes Purple/Orange to the real engine,
+ * all other services to the existing generic engine.
+ */
+function generateServiceDraft(service, block) {
+  if (FLOOR_SERVICES.includes(service)) {
+    return generateFloorScheduleDraft(service, block);
+  }
+  return generateServiceDraftGeneric(service, block);
+}
+
+// ── Generic fallback (original generateServiceDraft renamed below) ──────────
 function loadActiveScheduleDraft() {
   const key = scheduleDraftKey();
   if (!scheduleDraftStore[key]) scheduleDraftStore[key] = generateServiceDraft(activeScheduleService, currentBlock);
