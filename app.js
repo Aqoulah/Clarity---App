@@ -1512,34 +1512,48 @@ scheduleDraft = scheduleDraftStore[scheduleDraftKey()] || generateServiceDraft(a
 scheduleDraftStore[scheduleDraftKey()] = scheduleDraft;
 
 function builderView() {
-  const builderServices = configuredServices();
-  if (!builderServices.includes(activeBuilderService)) activeBuilderService = builderServices[0] || "";
-  const builderConfig = ensureServiceBuilderConfig(activeBuilderService);
-  const residents = builderResidentsForService(activeBuilderService, currentBlock);
-  const linkedCount = residents.filter((r) => r.source === "Master schedule").length;
-  const requestItems = builderRequestItems(activeBuilderService, currentBlock);
-  const pendingRequests = requestItems.filter((r) => r.status === "pending" || r.status === "chief-review").length;
+  const services = programTeams.filter((t) => t.active);
+  const readiness = services.map((team) => ({ team, ...serviceReadiness(team.name) }));
+  const readyCount = readiness.filter((r) => ["Ready", "Published"].includes(r.label)).length;
+  const attentionItems = readiness.filter((r) => ["Pending setup", "Draft", "Needs review"].includes(r.label));
   return `<section class="page builder-page">
     <div class="page-head">
-      <div><p class="eyebrow">Block preparation</p><h1>Build Block ${currentBlock}</h1><p>Select the block and service, then generate the draft schedule.</p></div>
-      <div class="page-head-actions"><span class="save-state"><span class="icon" data-icon="check"></span> All changes saved</span></div>
+      <div><p class="eyebrow">Block preparation</p><h1>Schedule Builder</h1><p>${readyCount} of ${services.length} services ready for Block ${currentBlock}. Generate drafts, then review and publish.</p></div>
+      <div class="page-head-actions">
+        <div class="select-wrap"><select class="builder-block-select" aria-label="Active block">${academicBlocks.map(([number, dates]) => `<option value="${number}" ${Number(number) === currentBlock ? "selected" : ""}>Block ${number} · ${dates}</option>`).join("")}</select></div>
+        <button class="primary-button open-generate"><span class="icon" data-icon="wand"></span> Generate all service drafts</button>
+      </div>
     </div>
     ${blockNavigator("builder")}
-    <section class="panel builder-simple-panel">
-      <div class="builder-simple-top">
-        <div class="builder-block-row">
-          <label>Active block<select class="builder-block-select">${academicBlocks.map(([number,dates])=>`<option value="${number}" ${Number(number)===currentBlock?"selected":""}>Block ${number} · ${dates}</option>`).join("")}</select></label>
+    <div class="builder-main-layout">
+      <section class="panel builder-service-table-panel">
+        <div class="panel-header"><div><h2>Services · Block ${currentBlock}</h2><p>Generate, review, and publish each service schedule</p></div></div>
+        <div class="builder-service-table">
+          <div class="bst-row bst-header"><span>Service</span><span>Roster</span><span>Status</span><span>Coverage</span><span>Version</span><span></span></div>
+          ${readiness.map(({ team, label, className, progress }) => {
+            const roster = builderResidentsForService(team.name, currentBlock);
+            const linked = roster.filter((r) => r.source === "Master schedule").length;
+            const target = serviceRosterTarget(team.name);
+            const version = label === "Published" ? "v2" : label === "Ready" ? "v1" : label === "Draft" ? "Draft" : "—";
+            return `<div class="bst-row">
+              <span class="bst-service"><span class="service-icon ${team.color}">${escapeHtml(team.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(team.name)}</strong><small>${escapeHtml(serviceRuleProfiles[team.name]?.group || team.category || team.rotation || "Service")}</small></span></span>
+              <span class="bst-roster">${linked} / ${target}</span>
+              <span><span class="status-pill ${className}">${label}</span></span>
+              <span class="bst-coverage"><div class="progress-track" style="width:72px"><i class="progress-fill" style="width:${progress}%"></i></div><small>${progress}%</small></span>
+              <span class="bst-version">${version}</span>
+              <span class="bst-actions"><button class="secondary-button compact generate-service-draft builder-row-generate" data-service="${escapeHtml(team.name)}">Generate</button><button class="secondary-button compact dashboard-service-open" data-service="${escapeHtml(team.name)}">Edit</button></span>
+            </div>`;
+          }).join("")}
         </div>
-        <div class="builder-service-tabs">
-          ${builderServices.map((service) => `<button class="builder-service-tab ${service === activeBuilderService ? "active" : ""}" data-builder-service="${escapeHtml(service)}">${escapeHtml(service)}<small>${serviceRosterTarget(service)} required</small></button>`).join("")}
+      </section>
+      <section class="panel builder-attention-panel">
+        <div class="panel-header"><div><h2>Attention center</h2><p>Items that may affect coverage or fairness</p></div></div>
+        <div class="alert-list">
+          ${attentionItems.length ? attentionItems.map(({ team, label }) => alertItem(label === "Needs review" ? "red" : "amber", `${team.name}: ${label}`, label === "Pending setup" ? `No Block ${currentBlock} draft generated yet.` : label === "Draft" ? "A draft exists but has not been marked ready." : "Coverage or fairness needs chief review.", "Now")).join("") : alertItem("blue", "All services ready", `Block ${currentBlock} has no pending service schedules.`, "Now")}
+          ${alertItem("blue", "Requests imported", "47 resident submissions synced successfully.", "1h")}
         </div>
-      </div>
-      <div class="builder-generate-zone">
-        <button class="primary-button builder-generate-btn generate-service-draft"><span class="icon" data-icon="wand"></span> Generate ${escapeHtml(activeBuilderService)} draft for Block ${currentBlock}</button>
-        <p class="builder-generate-hint">Clarity will use the master-linked roster, protected time, approved requests, and service rules to create an editable draft in the Schedules tab.</p>
-        <button class="secondary-button compact builder-go-to-schedule" data-service="${escapeHtml(activeBuilderService)}"><span class="icon" data-icon="calendar"></span> Edit ${escapeHtml(activeBuilderService)} schedule</button>
-      </div>
-    </section>
+      </section>
+    </div>
   </section>`;
 }
 
@@ -2026,12 +2040,13 @@ function annualMasterBuilderView() {
   const hasData = masterResidents.length > 0;
   const fileLabel = masterImportState.fileName ? escapeHtml(masterImportState.fileName) : null;
   if (!hasData) {
-    return `<div class="panel" style="padding:56px 24px;text-align:center;">
+    return `<div class="panel" style="padding:16px 20px;">
       <input class="master-import-file" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden>
-      <span class="icon" data-icon="grid" style="display:block;margin:0 auto 12px;width:28px;height:28px;color:#D1D5DB;"></span>
-      <p style="font-size:14px;font-weight:600;margin:0 0 4px;color:var(--text);">Upload your Excel master schedule to get started</p>
-      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 16px;">Import your existing workbook — residents, blocks, and rotations map automatically</p>
-      <button class="primary-button trigger-master-import"><span class="icon" data-icon="clipboard"></span> Import master schedule</button>
+      <p style="font-size:13px;font-weight:600;margin:0 0 4px;color:var(--text);">No master schedule imported yet</p>
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px;">Upload your Excel workbook — residents, blocks, and rotations map automatically.</p>
+      <label class="import-dropzone-compact trigger-master-import" style="cursor:pointer;">
+        <span>📎 Drop Excel file here or click to browse</span>
+      </label>
     </div>`;
   }
   return `<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px;margin-bottom:12px;">
@@ -4099,14 +4114,16 @@ function bindViewActions() {
     showToast("Outside rotator option", "This step is ready to add a supplemental resident or imported rotator roster for the selected block.");
   }));
   app.querySelectorAll(".generate-service-draft").forEach((button) => button.addEventListener("click", () => {
+    const svc = button.dataset.service || activeBuilderService;
+    activeBuilderService = svc;
     saveBuilderConfigFromForm();
-    scheduleDraftStore[scheduleDraftKey(currentBlock, activeBuilderService)] = generateServiceDraft(activeBuilderService, currentBlock);
-    setScheduleLifecycle(currentBlock, activeBuilderService, "Draft");
-    activeScheduleService = activeBuilderService;
+    scheduleDraftStore[scheduleDraftKey(currentBlock, svc)] = generateServiceDraft(svc, currentBlock);
+    setScheduleLifecycle(currentBlock, svc, "Draft");
+    activeScheduleService = svc;
     selectedScheduleWeek = 0;
     loadActiveScheduleDraft();
     navigate("schedule");
-    showToast(`${activeBuilderService} draft generated`, `Block ${currentBlock} is now open in the Schedules tab for chief editing.`);
+    showToast(`${svc} draft generated`, `Block ${currentBlock} is now open in the Schedules tab for chief editing.`);
   }));
   app.querySelectorAll("[data-attendance-session]").forEach((button) => button.addEventListener("click", () => {
     activeAttendanceSessionId = Number(button.dataset.attendanceSession);
@@ -4390,10 +4407,6 @@ function bindViewActions() {
     activeScheduleService = button.dataset.service;
     loadActiveScheduleDraft();
     navigate("schedule");
-  }));
-  app.querySelectorAll(".builder-service-tab").forEach((button) => button.addEventListener("click", () => {
-    activeBuilderService = button.dataset.builderService;
-    render();
   }));
   app.querySelectorAll(".builder-go-to-schedule").forEach((button) => button.addEventListener("click", () => {
     activeScheduleService = button.dataset.service || activeBuilderService;
