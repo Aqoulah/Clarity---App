@@ -974,7 +974,7 @@ function serviceRow(initials, tone, name, detail, progress, status, statusClass)
     <span class="service-name"><strong>${name}</strong><span>${detail}</span></span>
     <span class="progress-track"><i class="progress-fill" style="width:${progress}%"></i></span>
     <span class="status-pill ${statusClass}">${status}</span>
-    <button class="icon-button row-action dashboard-service-open" data-service="${escapeHtml(name)}" aria-label="Open ${name}"><span class="icon" data-icon="chevron"></span></button>
+    <button class="secondary-button compact dashboard-service-open" data-service="${escapeHtml(name)}" aria-label="Edit ${name} schedule">Edit</button>
   </div>`;
 }
 
@@ -1537,13 +1537,7 @@ function builderView() {
       <div class="builder-generate-zone">
         <button class="primary-button builder-generate-btn generate-service-draft"><span class="icon" data-icon="wand"></span> Generate ${escapeHtml(activeBuilderService)} draft for Block ${currentBlock}</button>
         <p class="builder-generate-hint">Clarity will use the master-linked roster, protected time, approved requests, and service rules to create an editable draft in the Schedules tab.</p>
-      </div>
-      <div class="checklist builder-readiness-checklist">
-        ${checklistItem("Master schedule linked", `${linkedCount} ${escapeHtml(activeBuilderService)} residents from Block ${currentBlock}`, true)}
-        ${checklistItem("Resident requests", pendingRequests ? `${pendingRequests} pending review` : `${requestItems.length} requests · all reviewed`, !pendingRequests)}
-        ${checklistItem("Institutional patterns", "4 institutions configured", true)}
-        ${checklistItem("Outside rotators", "6 profiles complete", true)}
-        ${checklistItem("Service configuration", `${builderConfig.roles.length} roles · ${builderConfig.shifts.length} shift types`, true)}
+        <button class="secondary-button compact builder-go-to-schedule" data-service="${escapeHtml(activeBuilderService)}"><span class="icon" data-icon="calendar"></span> Edit ${escapeHtml(activeBuilderService)} schedule</button>
       </div>
     </section>
   </section>`;
@@ -1597,63 +1591,6 @@ function builderRequestItems(service = activeBuilderService, block = currentBloc
   return [...requestRows, ...switchRows];
 }
 
-function builderGuidedStepPanel(step, service) {
-  const block = currentBlock;
-  const blockLabel = academicBlocks[block - 1]?.[1] || "selected dates";
-  const serviceTeam = programTeams.find((team)=>team.name===service);
-  const residents = builderResidentsForService(service, block);
-  const linkedCount = residents.filter((resident)=>resident.source==="Master schedule").length;
-  const outsideCount = residents.filter((resident)=>resident.institution !== "Corewell Health").length;
-  const protectedItems = builderProtectedItems(service, block);
-  const requestItems = builderRequestItems(service, block);
-  if (step === "rules") return "";
-  if (step === "setup") {
-    return `<section class="panel builder-guidance-panel">
-      <div class="builder-step-head"><span class="section-number">1</span><div><h2>Block setup for ${escapeHtml(service)}</h2><p>Select the block and service first. The next steps will pull the correct residents, protected time, and requests for this exact monthly schedule.</p></div></div>
-      <div class="builder-setup-grid">
-        <label>Active block<select class="builder-block-select">${academicBlocks.map(([number,dates])=>`<option value="${number}" ${Number(number)===block?"selected":""}>Block ${number} · ${dates}</option>`).join("")}</select></label>
-        <label>Service to build<select class="builder-service-select">${configuredServices().map((item)=>`<option ${item===service?"selected":""}>${escapeHtml(item)}</option>`).join("")}</select></label>
-        <span><small>Master source</small><strong>${(serviceMasterLinks[service] || [serviceTeam?.rotation || service]).join(", ")}</strong><span>${escapeHtml(serviceMasterSplitLabel(service))}</span></span>
-        <span><small>Minimum daily coverage</small><strong>${serviceRosterTarget(service)} residents</strong></span>
-      </div>
-      <div class="builder-flow-note"><span class="icon" data-icon="grid"></span><p>Changing the service changes every downstream panel. Example: choosing PICU pulls Block ${block} PICU residents, PICU units/roles, PICU protected time, and PICU-specific requests.</p></div>
-      <div class="form-footer"><button class="secondary-button" data-builder-step-target="people">Review people</button><button class="primary-button" data-builder-step-target="rules">Edit ${escapeHtml(service)} rules <span class="icon" data-icon="chevron"></span></button></div>
-    </section>`;
-  }
-  if (step === "people") {
-    const byInstitution = Object.entries(residents.reduce((acc, resident)=>{ acc[resident.institution] = (acc[resident.institution] || 0) + 1; return acc; }, {}));
-    return `<section class="panel builder-guidance-panel">
-      <div class="builder-step-head"><span class="section-number">2</span><div><h2>People pulled from Block ${block} ${escapeHtml(service)}</h2><p>${linkedCount} residents came from the master schedule using: ${escapeHtml(serviceMasterSplitLabel(service))}. ${outsideCount} outside rotator${outsideCount===1?"":"s"} are flagged so chiefs can avoid overcalling one institution or one block.</p></div></div>
-      <div class="builder-kpi-grid"><article><small>Master-linked</small><strong>${linkedCount}</strong><span>assigned to ${escapeHtml(service)}</span></article><article><small>Supplements needed</small><strong>${Math.max(0, serviceRosterTarget(service)-linkedCount)}</strong><span>call pool / outside rotators</span></article><article><small>Outside rotators</small><strong>${outsideCount}</strong><span>tracked by institution</span></article></div>
-      <div class="builder-people-list">${residents.map((resident,index)=>`<article><span class="avatar" style="background:${avatarColor(index)}">${initials(resident.displayName)}</span><span><strong>${escapeHtml(resident.displayName)}</strong><small>${resident.pgy} · ${escapeHtml(resident.institution)}</small><em>${escapeHtml(resident.rotation)} · ${resident.source}</em></span><span class="status-pill ${resident.source==="Master schedule"?"ready":"review"}">${resident.source==="Master schedule"?"Linked":"Supplement"}</span></article>`).join("")}</div>
-      <div class="builder-institution-load">${byInstitution.map(([institution,count])=>`<div><strong>${escapeHtml(institution)}</strong><span>${count} resident${count===1?"":"s"} in this block-service</span></div>`).join("")}</div>
-      <div class="form-footer"><button class="secondary-button builder-add-outside-rotator"><span class="icon" data-icon="plus"></span> Add outside rotator</button><button class="primary-button" data-builder-step-target="protected">Review protected time <span class="icon" data-icon="chevron"></span></button></div>
-    </section>`;
-  }
-  if (step === "protected") {
-    return `<section class="panel builder-guidance-panel">
-      <div class="builder-step-head"><span class="section-number">3</span><div><h2>Protected time pulled from profiles</h2><p>Clinics, didactics, exams, PTO, conference days, and institution rules are shown here before the generator creates assignments.</p></div></div>
-      <div class="builder-protected-table">
-        <div class="builder-table-head"><span>Resident</span><span>Type</span><span>Time / date</span><span>Source</span><span>Scheduling action</span></div>
-        ${protectedItems.map((item)=>`<div><span><strong>${escapeHtml(item.resident.displayName)}</strong><small>${escapeHtml(item.resident.institution)}</small></span><span>${escapeHtml(item.type)}</span><span>${escapeHtml(item.time)}</span><span>${escapeHtml(item.source)}</span><span class="status-pill ${String(item.action).toLowerCase().includes("pending")?"review":"ready"}">${escapeHtml(item.action)}</span></div>`).join("") || '<div class="empty-review">No protected time found for this service.</div>'}
-      </div>
-      <div class="form-footer"><button class="secondary-button" data-view-target="rules">Open institution rules</button><button class="primary-button" data-builder-step-target="requests">Review resident requests <span class="icon" data-icon="chevron"></span></button></div>
-    </section>`;
-  }
-  if (step === "requests") {
-    return `<section class="panel builder-guidance-panel">
-      <div class="builder-step-head"><span class="section-number">4</span><div><h2>Requests affecting ${escapeHtml(service)}</h2><p>This is a reminder panel. Chiefs still approve or decline requests in resident profiles, but the builder shows what could affect the draft before generation.</p></div></div>
-      <div class="builder-request-list">${requestItems.map((item)=>`<article><span class="request-kind">${escapeHtml(item.type)}</span><span><strong>${escapeHtml(item.resident)}</strong><small>${escapeHtml(item.detail)}</small></span><span class="request-conflict ${item.status==="pending"||item.status==="chief-review"?"warn":""}">${escapeHtml(item.note || "No detected conflict")}</span><span class="status-pill ${item.status==="approved"?"ready":item.status==="declined"?"missing":"review"}">${escapeHtml(item.status)}</span></article>`).join("") || '<div class="empty-review">No resident requests are linked to this block-service.</div>'}</div>
-      <div class="form-footer"><button class="secondary-button" data-view-target="residents">Open requests and profiles</button><button class="primary-button" data-builder-step-target="rules">Set service rules <span class="icon" data-icon="chevron"></span></button></div>
-    </section>`;
-  }
-  return `<section class="panel builder-guidance-panel review-generate-panel">
-    <div class="builder-step-head"><span class="section-number">6</span><div><h2>Review and generate ${escapeHtml(service)}</h2><p>Clarity will use the master-linked roster, protected time, approved requests, service rules, and fairness targets to create an editable draft.</p></div></div>
-    <div class="builder-kpi-grid"><article><small>Residents</small><strong>${residents.length}</strong><span>${linkedCount} from master schedule</span></article><article><small>Protected entries</small><strong>${protectedItems.length}</strong><span>clinic, didactics, leave</span></article><article><small>Requests</small><strong>${requestItems.length}</strong><span>${requestItems.filter((item)=>item.status==="pending"||item.status==="chief-review").length} pending</span></article></div>
-    <div class="builder-flow-note"><span class="icon" data-icon="spark"></span><p>After generation, Block ${block} ${escapeHtml(service)} will appear in the Schedules tab as a draft. Chiefs can drag, edit times, add residents, and save it as ready.</p></div>
-    <div class="form-footer"><button class="secondary-button" data-builder-step-target="rules">Back to rules</button><button class="primary-button generate-service-draft"><span class="icon" data-icon="wand"></span> Generate ${escapeHtml(service)} draft</button></div>
-  </section>`;
-}
 
 function numberField(label, value) {
   return `<label class="field"><span>${label}</span><div class="number-input"><button type="button">−</button><input type="number" value="${value}" aria-label="${label}"><button type="button">+</button></div></label>`;
@@ -3963,10 +3900,6 @@ function configureNavigation(portal) {
 
 function bindViewActions() {
   app.querySelectorAll("[data-view-target]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.viewTarget)));
-  app.querySelectorAll("[data-builder-step], [data-builder-step-target]").forEach((button) => button.addEventListener("click", () => {
-    activeBuilderStep = button.dataset.builderStep || button.dataset.builderStepTarget;
-    render();
-  }));
   app.querySelectorAll("[data-master-step]").forEach((button) => button.addEventListener("click", () => {
     activeAnnualWorkbook = "masters";
     activeMasterStep = button.dataset.masterStep;
@@ -4461,6 +4394,11 @@ function bindViewActions() {
   app.querySelectorAll(".builder-service-tab").forEach((button) => button.addEventListener("click", () => {
     activeBuilderService = button.dataset.builderService;
     render();
+  }));
+  app.querySelectorAll(".builder-go-to-schedule").forEach((button) => button.addEventListener("click", () => {
+    activeScheduleService = button.dataset.service || activeBuilderService;
+    loadActiveScheduleDraft();
+    navigate("schedule");
   }));
   app.querySelectorAll(".add-builder-service").forEach((button) => button.addEventListener("click", () => {
     const number = programTeams.length + 1;
