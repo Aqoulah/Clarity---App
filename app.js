@@ -1515,112 +1515,38 @@ scheduleDraftStore[scheduleDraftKey()] = scheduleDraft;
 function builderView() {
   const builderServices = configuredServices();
   if (!builderServices.includes(activeBuilderService)) activeBuilderService = builderServices[0] || "";
-  const builderTeam = programTeams.find((team) => team.name === activeBuilderService);
   const builderConfig = ensureServiceBuilderConfig(activeBuilderService);
-  const builderLanes = ensureServiceCoverageLanes(activeBuilderService);
-  const distribution = serviceDistributionSettings[activeBuilderService];
-  const steps = [
-    ["setup", "1", "Block setup", "Dates, holidays, and services", true],
-    ["people", "2", "People", "Residents and outside rotators", true],
-    ["protected", "3", "Protected time", "Clinics, didactics, exams, leave", true],
-    ["requests", "4", "Requests", "Days off and golden weekends", true],
-    ["rules", "5", "Rules", "Coverage, rest, and fairness targets", serviceRosterTarget(activeBuilderService) > 0],
-    ["review", "6", "Review & generate", "Validate inputs and create schedules", false]
-  ];
+  const residents = builderResidentsForService(activeBuilderService, currentBlock);
+  const linkedCount = residents.filter((r) => r.source === "Master schedule").length;
+  const requestItems = builderRequestItems(activeBuilderService, currentBlock);
+  const pendingRequests = requestItems.filter((r) => r.status === "pending" || r.status === "chief-review").length;
   return `<section class="page builder-page">
-      <div class="page-head">
-      <div><p class="eyebrow">Block preparation</p><h1>Build Block ${currentBlock}</h1><p>Complete the inputs below. Clarity checks every rule before scheduling.</p></div>
+    <div class="page-head">
+      <div><p class="eyebrow">Block preparation</p><h1>Build Block ${currentBlock}</h1><p>Select the block and service, then generate the draft schedule.</p></div>
       <div class="page-head-actions"><span class="save-state"><span class="icon" data-icon="check"></span> All changes saved</span></div>
-      </div>
-      ${blockNavigator("builder")}
-      <section class="panel annual-structure-panel">
-        <div class="panel-header"><div><h2>Annual scheduling structure</h2><p>Set this once for the program. Every master schedule, resident deadline, request form, and monthly schedule follows this structure.</p></div><span class="master-source"><span class="icon" data-icon="grid"></span> Program-wide</span></div>
-        <div class="annual-structure-grid">
-          <label>Academic year<input class="program-year-input" value="${programSettings.academicYear}"></label>
-          <label>Number of blocks<select class="program-block-count"><option value="12" ${programSettings.blockCount===12?"selected":""}>12 blocks</option><option value="13" ${programSettings.blockCount===13?"selected":""}>13 blocks</option><option value="24" ${programSettings.blockCount===24?"selected":""}>24 half-month blocks</option><option value="26" ${programSettings.blockCount===26?"selected":""}>26 two-week blocks</option></select></label>
-          <label>Block model<select class="program-block-model"><option ${programSettings.blockModel==="Four-week blocks"?"selected":""}>Four-week blocks</option><option ${programSettings.blockModel==="Two-week blocks"?"selected":""}>Two-week blocks</option><option>Custom dates</option></select></label>
-          <label>Request deadline<input class="program-lead-days" type="number" min="1" value="${programSettings.requestLeadDays}"><small>days before block start</small></label>
-          <button class="primary-button compact save-program-structure">Apply program structure</button>
-        </div>
-      </section>
-      <div class="builder-layout">
-      <section class="panel builder-steps">
-        <div class="builder-progress"><span style="width:67%"></span></div>
-        ${steps.map(([id, number, title, copy, complete]) => `
-          <button class="builder-step ${id === activeBuilderStep ? "active" : ""} ${complete ? "complete" : ""}" data-builder-step="${id}">
-            <span class="step-number">${complete ? '<span class="icon" data-icon="check"></span>' : number}</span>
-            <span><strong>${title}</strong><small>${copy}</small></span>
-            <span class="icon step-chevron" data-icon="chevron"></span>
-          </button>`).join("")}
-      </section>
-      <div class="builder-main">
-        ${builderGuidedStepPanel(activeBuilderStep, activeBuilderService)}
-        ${activeBuilderStep === "rules" ? `
-        <section class="panel form-panel service-builder-panel">
-          <div class="form-panel-head"><div><span class="section-number">5</span><div><h2>Services, roles, and working hours</h2><p>Configure every schedule separately. These settings are reused for every block and can be edited later.</p></div></div><button class="primary-button compact add-builder-service"><span class="icon" data-icon="plus"></span> Add service</button></div>
-          <div class="builder-service-tabs">${builderServices.map(service=>`<button class="builder-service-tab ${service===activeBuilderService?"active":""}" data-builder-service="${escapeHtml(service)}">${escapeHtml(service)}<small>${serviceRosterTarget(service)} required</small></button>`).join("")}</div>
-          <div class="service-identity-grid">
-            <label>Service name<input class="builder-service-name" value="${escapeHtml(activeBuilderService)}"></label>
-            <label>Master-schedule rotation<select class="builder-master-link">${masterRotationOptions.map(option=>`<option ${serviceMasterLinks[activeBuilderService]?.includes(option.name)?"selected":""}>${option.name}</option>`).join("")}</select></label>
-            <label>Service category<select class="builder-service-category">${["Inpatient","Critical care","Call pool","Night coverage","Consult","Custom"].map(category=>`<option ${builderTeam?.category===category?"selected":""}>${category}</option>`).join("")}</select></label>
-            <div class="service-identity-actions"><button class="secondary-button compact save-service-identity">Save service details</button><button class="danger-link compact open-delete-service"><span class="icon" data-icon="close"></span> Delete service</button></div>
-          </div>
-          <div class="rule-section coverage-lane-section">
-            <div class="rule-heading"><h3>Coverage locations and teams</h3><span>Divide residents by unit, floor, team, or responsibility</span></div>
-            <div class="coverage-lane-list">${builderLanes.map((lane,index)=>`<div class="coverage-lane-row" data-lane-index="${index}">
-              <input class="builder-lane-color" type="color" value="${lane.color}">
-              <input class="builder-lane-name" value="${escapeHtml(lane.name)}" aria-label="Coverage lane name">
-              <label>Minimum<input class="builder-lane-minimum" type="number" min="0" value="${lane.minimum}"></label>
-              <button class="icon-button delete-builder-lane" aria-label="Delete ${escapeHtml(lane.name)}"><span class="icon" data-icon="close"></span></button>
-            </div>`).join("")}</div>
-            <button class="secondary-button compact add-builder-lane"><span class="icon" data-icon="plus"></span> Add unit or team</button>
-            <div class="distribution-options">
-              <label>Rotate assignments<select class="builder-lane-cadence">${["Daily","Weekly","Every 2 weeks","Keep fixed"].map(value=>`<option ${distribution.cadence===value?"selected":""}>${value}</option>`).join("")}</select></label>
-              <label>Night handoff<select class="builder-night-handoff">${["Staggered stretches","Weekly switch","Fixed night resident","Chief assigns manually"].map(value=>`<option ${distribution.nightHandoff===value?"selected":""}>${value}</option>`).join("")}</select></label>
-              <label>Fairness target<select class="builder-distribution-balance">${["Equal weekends and weekdays","Equal total hours","Equal calls and nights","Coverage first"].map(value=>`<option ${distribution.balance===value?"selected":""}>${value}</option>`).join("")}</select></label>
-            </div>
-          </div>
-          <div class="rule-section">
-            <div class="rule-heading"><h3>Required coverage roles</h3><span>${builderConfig.roles.reduce((sum,role)=>sum+Number(role.count),0)} residents required each day</span></div>
-            <div class="builder-role-list">${builderConfig.roles.map((role,index)=>`<div class="builder-role-row" data-builder-role="${index}"><input class="builder-role-name" value="${escapeHtml(role.name)}"><select class="builder-role-pgy">${["PGY-1","PGY-2","PGY-3","PGY-2/3","Any eligible","Outside rotator"].map(pgy=>`<option ${role.pgy===pgy?"selected":""}>${pgy}</option>`).join("")}</select><label>Required<input class="builder-role-count" type="number" min="0" value="${role.count}"></label><button class="icon-button delete-builder-role"><span class="icon" data-icon="close"></span></button></div>`).join("")}</div>
-            <button class="secondary-button compact add-builder-role"><span class="icon" data-icon="plus"></span> Add coverage role</button>
-          </div>
-          <div class="rule-section">
-            <div class="rule-heading"><h3>Shift types and service hours</h3><span>Only enabled shifts appear when chiefs assign this service</span></div>
-            <div class="service-shift-library">${shiftTemplates.filter(shift=>!["CL-AM","CL-PM","PC"].includes(shift.code)).map((shift)=>{const serviceShift=getServiceShiftTemplate(activeBuilderService,shift.code);return `<article class="service-shift-card ${builderConfig.shifts.includes(shift.code)?"enabled":""}" data-shift-code="${shift.code}">
-              <input class="builder-shift-enabled" type="checkbox" aria-label="Enable ${escapeHtml(serviceShift.name)}" ${builderConfig.shifts.includes(shift.code)?"checked":""}>
-              <input class="builder-shift-color" type="color" value="${serviceShift.colorHex || defaultShiftHex(serviceShift)}" aria-label="${escapeHtml(serviceShift.name)} color">
-              <label>Name<input class="builder-shift-name" value="${escapeHtml(serviceShift.name)}"></label>
-              <label>Counts as<select class="builder-shift-type">${["Day","Night","Call","Task","Protected","Recovery","Off"].map(type=>`<option ${serviceShift.type===type?"selected":""}>${type}</option>`).join("")}</select></label>
-              <label>Start<input class="builder-shift-start" type="time" value="${serviceShift.start || ""}"></label>
-              <label>End<input class="builder-shift-end" type="time" value="${serviceShift.end || ""}"></label>
-              <label>Card style<select class="builder-shift-style">${["soft","solid","outline"].map(style=>`<option value="${style}" ${serviceShift.style===style?"selected":""}>${style[0].toUpperCase()+style.slice(1)}</option>`).join("")}</select></label>
-              <label>Show<select class="builder-shift-display"><option value="time" ${serviceShift.display!=="label"?"selected":""}>Hours</option><option value="label" ${serviceShift.display==="label"?"selected":""}>Task name</option></select></label>
-            </article>`}).join("")}</div>
-            <button class="secondary-button compact add-service-shift"><span class="icon" data-icon="plus"></span> Add custom assignment type</button>
-          </div>
-          <div class="rule-section">
-            <div class="rule-heading"><h3>Service-specific fairness and safety</h3><span>Applied only to ${escapeHtml(activeBuilderService)}</span></div>
-            <div class="service-rule-options"><label><span>Require golden weekend</span><input type="checkbox" checked></label><label><span>Maximum consecutive nights</span><input class="builder-max-nights" type="number" min="0" value="${serviceScheduleSettings[activeBuilderService]?.nights ? 5 : 0}"></label><label><span>Post-call recovery</span><input type="checkbox" ${serviceScheduleSettings[activeBuilderService]?.nights?"checked":""}></label></div>
-          </div>
-          <div class="form-footer"><button class="secondary-button" data-view-target="rules">Open advanced institution rules</button><button class="primary-button save-service-builder">Save ${escapeHtml(activeBuilderService)} and rebuild draft <span class="icon" data-icon="chevron"></span></button></div>
-        </section>
-        ` : ""}
-      </div>
-      <aside class="builder-aside">
-        <section class="panel readiness-panel">
-          <div class="panel-header"><div><h2>Input readiness</h2><p>Block ${currentBlock} · ${academicBlocks[currentBlock - 1][1]}</p></div><span class="readiness-ring">92%</span></div>
-          <div class="checklist">
-            ${checklistItem("Master schedule linked", `${masterRowsForService(activeBuilderService,currentBlock).length} ${activeBuilderService} residents`, true)}
-            ${checklistItem("Resident requests", "47 of 47 submitted", true)}
-            ${checklistItem("Institutional patterns", "4 institutions", true)}
-            ${checklistItem("Outside rotators", "6 profiles complete", true)}
-            ${checklistItem("Service configuration", `${builderConfig.roles.length} roles · ${builderConfig.shifts.length} shift types`, true)}
-          </div>
-        </section>
-        <section class="tip-card"><span class="icon" data-icon="spark"></span><div><strong>Clarity recommendation</strong><p>Keep strict coverage rules locked. Use fairness targets as optimization goals so a workable schedule can always be produced.</p></div></section>
-      </aside>
     </div>
+    ${blockNavigator("builder")}
+    <section class="panel builder-simple-panel">
+      <div class="builder-simple-top">
+        <div class="builder-block-row">
+          <label>Active block<select class="builder-block-select">${academicBlocks.map(([number,dates])=>`<option value="${number}" ${Number(number)===currentBlock?"selected":""}>Block ${number} · ${dates}</option>`).join("")}</select></label>
+        </div>
+        <div class="builder-service-tabs">
+          ${builderServices.map((service) => `<button class="builder-service-tab ${service === activeBuilderService ? "active" : ""}" data-builder-service="${escapeHtml(service)}">${escapeHtml(service)}<small>${serviceRosterTarget(service)} required</small></button>`).join("")}
+        </div>
+      </div>
+      <div class="builder-generate-zone">
+        <button class="primary-button builder-generate-btn generate-service-draft"><span class="icon" data-icon="wand"></span> Generate ${escapeHtml(activeBuilderService)} draft for Block ${currentBlock}</button>
+        <p class="builder-generate-hint">Clarity will use the master-linked roster, protected time, approved requests, and service rules to create an editable draft in the Schedules tab.</p>
+      </div>
+      <div class="checklist builder-readiness-checklist">
+        ${checklistItem("Master schedule linked", `${linkedCount} ${escapeHtml(activeBuilderService)} residents from Block ${currentBlock}`, true)}
+        ${checklistItem("Resident requests", pendingRequests ? `${pendingRequests} pending review` : `${requestItems.length} requests · all reviewed`, !pendingRequests)}
+        ${checklistItem("Institutional patterns", "4 institutions configured", true)}
+        ${checklistItem("Outside rotators", "6 profiles complete", true)}
+        ${checklistItem("Service configuration", `${builderConfig.roles.length} roles · ${builderConfig.shifts.length} shift types`, true)}
+      </div>
+    </section>
   </section>`;
 }
 

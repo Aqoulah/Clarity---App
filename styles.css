@@ -2088,3 +2088,14 @@ h3 { font-size: 13px; }
   .elective-ranking-list label { grid-template-columns: 28px 1fr; }
   .elective-ranking-list small { grid-column: 2; text-align: left; }
 }
+
+/* ── Simplified builder ─────────────────────────────────── */
+.builder-simple-panel { padding: 0; }
+.builder-simple-top { border-bottom: 1px solid var(--line); padding: 20px 20px 0; }
+.builder-block-row { margin-bottom: 16px; }
+.builder-block-row label { align-items: center; color: var(--subtle); display: flex; font-size: 11px; font-weight: 700; gap: 10px; text-transform: uppercase; }
+.builder-block-row select { font-size: 13px; font-weight: 600; color: #1a1a2e; }
+.builder-generate-zone { align-items: center; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; padding: 32px 24px; text-align: center; }
+.builder-generate-btn { font-size: 14px; padding: 14px 36px; }
+.builder-generate-hint { color: var(--subtle); font-size: 11px; line-height: 1.6; max-width: 500px; }
+.builder-readiness-checklist { padding: 4px 20px 8px; }
