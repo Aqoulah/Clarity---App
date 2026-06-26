@@ -3791,10 +3791,12 @@ function scheduleView() {
     activeScheduleService = services[0] || "";
     loadActiveScheduleDraft();
   }
-  const weekStart = selectedScheduleWeek * 7;
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const date = weekStart + index + 1;
-    return [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][index], `Jun ${date}`, date];
+  const weekStart = 0; // always show full block
+  const FULL_BLOCK = 28;
+  const days = Array.from({ length: FULL_BLOCK }, (_, index) => {
+    const date = index + 1;
+    const dow = index % 7;
+    return [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][dow], `Jun ${date}`, date];
   });
   const templateRange = (code, fallback) => {
     const template = getServiceShiftTemplate(activeScheduleService, code);
@@ -3802,7 +3804,7 @@ function scheduleView() {
   };
   const scheduleRows = scheduleDraft.map((resident) => ({
     ...resident,
-    shifts: resident.shifts.slice(weekStart, weekStart + 7).map((entry) => ({ ...entry, value: ({
+    shifts: resident.shifts.slice(0, FULL_BLOCK).map((entry) => ({ ...entry, value: ({
       "1700–0700": templateRange("NIGHT", entry.value),
       "1815–0700": templateRange("WKND-N", entry.value),
       "0630–1700": templateRange("DAY", entry.value),
@@ -3830,6 +3832,78 @@ function scheduleView() {
   const activeLanes = ensureServiceCoverageLanes(activeScheduleService);
   const distribution = serviceDistributionSettings[activeScheduleService];
   return `<section class="schedule-page">
+    <style>
+      .schedule-sheet-wrap {
+        overflow-x: auto;
+        overflow-y: visible;
+        -webkit-overflow-scrolling: touch;
+        border: 1px solid var(--color-border-subtle, #e5e7eb);
+        border-radius: 10px;
+        background: #fff;
+      }
+      .schedule-sheet {
+        display: grid;
+        grid-template-columns: 200px repeat(28, minmax(88px, 1fr));
+        min-width: calc(200px + 28 * 88px);
+        width: max-content;
+      }
+      .sheet-row {
+        display: contents;
+      }
+      .resident-cell {
+        position: sticky;
+        left: 0;
+        z-index: 3;
+        background: #fff;
+        border-right: 2px solid var(--color-border-subtle, #e5e7eb);
+        min-width: 200px;
+        padding: 10px 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .date-cell {
+        padding: 8px 4px;
+        text-align: center;
+        border-bottom: 1px solid #f0f1f5;
+        border-right: 1px solid #f0f1f5;
+        min-width: 88px;
+      }
+      .date-cell.weekend {
+        background: #f8f8fc;
+      }
+      .date-cell.week-start {
+        border-left: 2px solid #d0d3f0;
+      }
+      .date-cell strong { display: block; font-size: 11px; color: #888; font-weight: 500; }
+      .date-cell span { display: block; font-size: 13px; font-weight: 600; color: #1a1a2e; }
+      .date-cell small { display: block; font-size: 10px; color: #aaa; margin-top: 2px; }
+      .shift-cell {
+        width: 100%;
+        min-width: 86px;
+        font-size: 11px;
+      }
+      .header-resident {
+        background: #f9f9fc;
+        font-weight: 600;
+        border-bottom: 2px solid #e5e7eb;
+        z-index: 4;
+      }
+      .coverage-cell {
+        padding: 6px 4px;
+        text-align: center;
+        font-size: 11px;
+        border-top: 2px solid #e5e7eb;
+      }
+      .block-range-pill {
+        font-size: 12px;
+        color: var(--color-text-secondary, #666);
+        background: #f0f1fa;
+        border-radius: 20px;
+        padding: 4px 12px;
+        white-space: nowrap;
+      }
+    </style>
     <div class="schedule-toolbar">
       <div><p class="eyebrow">Block ${currentBlock} · ${academicBlocks[currentBlock - 1][1]}, 2026</p><h1>Schedule workspace</h1></div>
       <div class="toolbar-actions">
@@ -3844,7 +3918,7 @@ function scheduleView() {
       ${services.map((service) => `<button class="service-tab ${service === activeScheduleService ? "active" : ""}" data-service="${service}">${service}${service === "NICU" ? '<i>1</i>' : ""}</button>`).join("")}
     </div>
     <div class="schedule-controls">
-      <div class="control-group"><button class="secondary-button compact"><span class="icon" data-icon="filter"></span> Filter</button><div class="select-wrap"><select class="filter-select schedule-week-select">${[1,2,3,4].map(week=>`<option value="${week-1}" ${selectedScheduleWeek===week-1?"selected":""}>Week ${week} · Jun ${(week-1)*7+1}-${week*7}</option>`).join("")}</select></div><button class="secondary-button compact">Today</button><button class="primary-button compact open-add-resident"><span class="icon" data-icon="plus"></span> Add resident</button></div>
+      <div class="control-group"><button class="secondary-button compact"><span class="icon" data-icon="filter"></span> Filter</button><span class="block-range-pill">Full block &middot; 28 days &middot; scroll 2192</span><button class="primary-button compact open-add-resident"><span class="icon" data-icon="plus"></span> Add resident</button></div>
       <div class="legend"><span><i class="legend-dot day"></i>Day</span><span><i class="legend-dot night"></i>Night</span><span><i class="legend-dot protected"></i>Protected</span><span><i class="legend-dot off"></i>Off</span></div>
       <div class="control-group"><div class="schedule-layout-toggle" role="group" aria-label="Schedule view"><button class="${activeScheduleLayout==="builder"?"active":""}" data-schedule-layout="builder">Builder view</button><button class="${activeScheduleLayout==="excel"?"active":""}" data-schedule-layout="excel">Excel-style</button></div><button class="secondary-button compact undo-button" ${scheduleUndoStack.length ? "" : "disabled"}>Undo</button><button class="secondary-button compact redo-button" ${scheduleRedoStack.length ? "" : "disabled"}>Redo</button></div>
     </div>
@@ -3870,7 +3944,7 @@ function scheduleView() {
         <div class="schedule-sheet">
           <div class="sheet-row sheet-header">
             <div class="resident-cell header-resident"><span>Resident</span><small>${serviceRuleProfiles[activeScheduleService]?.staffing || "Configured service requirement"}</small></div>
-            ${days.map(([day, date], index) => `<div class="date-cell ${index > 4 ? "weekend" : ""}"><strong>${day}</strong><span>${date}</span><small>${index > 4 ? "Weekend" : index === 2 ? "Didactics" : ""}</small></div>`).join("")}
+            ${days.map(([day, date], index) => `<div class="date-cell ${index % 7 >= 5 ? "weekend" : ""} ${index % 7 === 0 && index > 0 ? "week-start" : ""}"><strong>${day}</strong><span>${date}</span><small>${index % 7 >= 5 ? "Weekend" : index % 7 === 2 ? "Didactics" : ""}</small></div>`).join("")}
           </div>
           ${scheduleRows.map((resident, rowIndex) => `
             <div class="sheet-row">
