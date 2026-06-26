@@ -3832,78 +3832,6 @@ function scheduleView() {
   const activeLanes = ensureServiceCoverageLanes(activeScheduleService);
   const distribution = serviceDistributionSettings[activeScheduleService];
   return `<section class="schedule-page">
-    <style>
-      .schedule-sheet-wrap {
-        overflow-x: auto;
-        overflow-y: visible;
-        -webkit-overflow-scrolling: touch;
-        border: 1px solid var(--color-border-subtle, #e5e7eb);
-        border-radius: 10px;
-        background: #fff;
-      }
-      .schedule-sheet {
-        display: grid;
-        grid-template-columns: 200px repeat(28, minmax(88px, 1fr));
-        min-width: calc(200px + 28 * 88px);
-        width: max-content;
-      }
-      .sheet-row {
-        display: contents;
-      }
-      .resident-cell {
-        position: sticky;
-        left: 0;
-        z-index: 3;
-        background: #fff;
-        border-right: 2px solid var(--color-border-subtle, #e5e7eb);
-        min-width: 200px;
-        padding: 10px 12px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .date-cell {
-        padding: 8px 4px;
-        text-align: center;
-        border-bottom: 1px solid #f0f1f5;
-        border-right: 1px solid #f0f1f5;
-        min-width: 88px;
-      }
-      .date-cell.weekend {
-        background: #f8f8fc;
-      }
-      .date-cell.week-start {
-        border-left: 2px solid #d0d3f0;
-      }
-      .date-cell strong { display: block; font-size: 11px; color: #888; font-weight: 500; }
-      .date-cell span { display: block; font-size: 13px; font-weight: 600; color: #1a1a2e; }
-      .date-cell small { display: block; font-size: 10px; color: #aaa; margin-top: 2px; }
-      .shift-cell {
-        width: 100%;
-        min-width: 86px;
-        font-size: 11px;
-      }
-      .header-resident {
-        background: #f9f9fc;
-        font-weight: 600;
-        border-bottom: 2px solid #e5e7eb;
-        z-index: 4;
-      }
-      .coverage-cell {
-        padding: 6px 4px;
-        text-align: center;
-        font-size: 11px;
-        border-top: 2px solid #e5e7eb;
-      }
-      .block-range-pill {
-        font-size: 12px;
-        color: var(--color-text-secondary, #666);
-        background: #f0f1fa;
-        border-radius: 20px;
-        padding: 4px 12px;
-        white-space: nowrap;
-      }
-    </style>
     <div class="schedule-toolbar">
       <div><p class="eyebrow">Block ${currentBlock} · ${academicBlocks[currentBlock - 1][1]}, 2026</p><h1>Schedule workspace</h1></div>
       <div class="toolbar-actions">
@@ -4120,16 +4048,33 @@ function getDraftCoverage(column) {
 
 function shiftCell(entry, row, col) {
   const shift = entry.value;
+  const dow = col % 7;
+  const weekBorder = dow === 0 && col > 0 ? ' week-start-col' : '';
   const dragAttrs = `draggable="true" data-row="${row}" data-col="${col}"`;
-  if (!shift) return `<button class="shift-cell empty ${selectedScheduleCell?.row===row&&selectedScheduleCell?.column===col?"selected":""}" ${dragAttrs} aria-label="Add shift for ${scheduleDraft[row].name}">+</button>`;
+  if (!shift) return `<button class="shift-cell empty${weekBorder} ${selectedScheduleCell?.row===row&&selectedScheduleCell?.column===col?"selected":""}" ${dragAttrs} aria-label="Add shift">+</button>`;
   const template = entry.templateCode ? getServiceShiftTemplate(activeScheduleService, entry.templateCode) : shiftTemplateFromValue(shift);
   let type = template?.type === "Night" ? "night" : template?.type === "Protected" || template?.type === "Call" ? "protected" : template?.type === "Recovery" || template?.type === "Off" ? "off" : template?.type === "Task" ? "task" : "day";
-  if (!template && /^(17|18|19|20)/.test(shift) && /(07|08):?00/.test(shift)) type = "night";
-  if (shift === "CLINIC" || shift === "DIDACTIC") type = "protected";
-  if (shift === "OFF" || shift === "POST CALL") type = "off";
-  const label = template?.name || (type === "night" ? "Night" : type === "protected" ? "Protected" : type === "off" ? "Rest" : "Day");
-  const lane = ensureServiceCoverageLanes(activeScheduleService).find((item)=>item.name===entry.lane);
-  return `<button class="shift-cell ${type} ${template?.style || ""} ${entry.overridden?"overridden":""} ${selectedScheduleCell?.row===row&&selectedScheduleCell?.column===col?"selected":""}" ${shiftCardStyle(template)} ${dragAttrs}><strong>${shift}</strong><small>${entry.overridden ? `Chief override · ${label}` : label}</small>${entry.lane?`<em class="cell-lane" style="--lane-color:${lane?.color || "#4f83c4"}">${escapeHtml(entry.lane)}</em>`:""}<i class="cell-source-dot" title="${entry.source}"></i></button>`;
+  if (!template && /^(17|18|19|20|1[56])/.test(shift) && /(07|08):?00/.test(shift)) type = "night";
+  if (shift === "CLINIC" || shift === "DIDACTIC" || shift === "PROTECTED") type = "protected";
+  if (shift === "OFF" || shift === "POST CALL" || shift === "X") type = "off";
+  if (shift === "NICU" || shift === "See Gold" || shift === "SEE_GOLD") type = "task";
+  if (shift === "Inpatient") type = "day";
+  if (shift === "Outpatient") type = "task";
+  // Clean display label
+  const displayShift = shift === "POST CALL" ? "Post Call"
+    : shift === "CLINIC" ? "Clinic"
+    : shift === "DIDACTIC" ? "Didactics"
+    : shift === "PROTECTED" ? "Protected"
+    : shift === "See Gold" ? "See Gold"
+    : shift;
+  const sublabel = entry.overridden ? "Chief override"
+    : type === "night" ? "Night call"
+    : type === "protected" ? "Protected"
+    : type === "off" ? "Rest"
+    : entry.lane || "Day";
+  const pendingDot = entry.pendingWarning ? '<i class="pending-dot" title="Pending request"></i>' : '';
+  const sourceDot = `<i class="cell-source-dot" title="${escapeHtml(entry.source || '')}"></i>`;
+  return `<button class="shift-cell ${type}${weekBorder} ${template?.style || ""} ${entry.overridden?"overridden":""} ${selectedScheduleCell?.row===row&&selectedScheduleCell?.column===col?"selected":""}" ${shiftCardStyle(template)} ${dragAttrs}>${pendingDot}<strong>${escapeHtml(displayShift)}</strong><small>${escapeHtml(sublabel)}</small>${sourceDot}</button>`;
 }
 function initials(name) { return name.split(/[\s,]+/).filter(Boolean).slice(0,2).map((part) => part[0]).join("").toUpperCase(); }
 function avatarColor(index) { return ["#dce8fa","#e7dff8","#d9f1ed","#fae8cf","#f4dadd","#e3e6ed"][index % 6]; }
