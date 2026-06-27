@@ -3138,7 +3138,7 @@ function editableMasterGridHtml() {
   <div class="editable-master-grid">
     <div class="editable-master-row master-header"><div>Resident</div>${academicBlocks.map(([number,dates])=>`<button class="master-column-header ${Number(number)===currentBlock?"active":""}" data-master-block="${number}"><strong>Block ${number}</strong><small>${dates}</small><em>${getBlockConflictCount(Number(number)-1) ? `${getBlockConflictCount(Number(number)-1)} issue` : "Clear"}</em></button>`).join("")}<div>Progress</div></div>
     ${visibleRows.map(({ resident, row })=>`<div class="editable-master-row">
-      <div class="master-person"><span class="avatar" style="background:${avatarColor(row)}">${resident.id}</span><span><strong>${resident.name}</strong><small>${resident.pgy}</small></span></div>
+      <div class="master-person"><span class="avatar" style="background:${avatarColor(row)}">${initials(resident.name)}</span><span><strong>${resident.name}</strong><small>${resident.pgy}</small></span></div>
       ${masterAssignments[row].map((assignment,column)=>masterAssignmentCell(row,column,assignment)).join("")}
       <div class="resident-requirement-score">${getResidentRequirementScore(row)}%<span>${getResidentConflictCount(row) ? `${getResidentConflictCount(row)} issue` : "On track"}</span></div>
     </div>`).join("")}
@@ -3150,18 +3150,20 @@ function masterAssignmentCell(row, column, assignment) {
   const option = masterRotationOptions.find((item) => item.name === cat) || masterRotationOptions.find((item) => item.name === assignment.rotation) || masterRotationOptions[0];
   const conflicts = getCellConflicts(row, column);
   const pgy = masterResidents[row]?.pgy;
-  const sublabel = assignment.displayName && assignment.displayName !== assignment.rotation
-    ? `<span class="cell-elective-label" title="${escapeHtml(assignment.raw || assignment.displayName)}">${escapeHtml(assignment.displayName)}</span>` : "";
+  const displayText = assignment.displayName || assignment.rotation;
   const showCP = assignment.callPoolEligible && pgy && pgy !== "PGY-1";
   const showXC = assignment.internCrossCoberEligible && pgy === "PGY-1";
-  const badge = showCP ? `<span class="cell-badge cp" title="Call pool eligible">CP</span>` : showXC ? `<span class="cell-badge xc" title="Intern cross-cover eligible">XC</span>` : "";
+  const badge = showCP ? `<span class="cell-badge cp">CP</span>` : showXC ? `<span class="cell-badge xc">XC</span>` : "";
   const protClass = assignment.isProtected ? "protected" : "";
+  const nameClass = `cell-rotation-name${assignment.isProtected ? " prot-name" : ""}`;
   return `<div class="master-assignment-cell ${option.color} ${protClass} ${assignment.locked ? "locked" : ""} ${conflicts.length ? "has-conflict" : ""}" data-master-row="${row}" data-master-column="${column}" draggable="${(assignment.locked || assignment.isProtected) ? "false" : "true"}">
-    <select class="master-rotation-select" aria-label="${masterResidents[row].name} Block ${column+1} rotation" ${(assignment.locked || assignment.isProtected) ? "disabled" : ""}>
-      ${masterRotationOptions.map((rotation)=>`<option value="${rotation.name}" ${rotation.name===assignment.rotation?"selected":""}>${rotation.name}</option>`).join("")}
+    <div class="cell-body">
+      <span class="${nameClass}" title="${escapeHtml(assignment.raw || displayText)}">${escapeHtml(displayText)}</span>
+      ${badge}
+    </div>
+    <select class="master-rotation-select" aria-label="${masterResidents[row].name} Block ${column+1}" ${(assignment.locked || assignment.isProtected) ? "disabled" : ""}>
+      ${masterRotationOptions.map((r)=>`<option value="${r.name}" ${r.name===assignment.rotation?"selected":""}>${r.name}</option>`).join("")}
     </select>
-    ${sublabel}
-    ${badge}
     <button class="cell-lock" aria-label="${assignment.locked?"Unlock":"Lock"} ${masterResidents[row].name} Block ${column+1}"><span class="icon" data-icon="${assignment.locked?"check":"more"}"></span></button>
     ${conflicts.length ? `<span class="cell-warning" title="${conflicts[0].title}"><span class="icon" data-icon="alert"></span></span>` : ""}
   </div>`;
