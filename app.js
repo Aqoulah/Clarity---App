@@ -2127,14 +2127,14 @@ function normalizeRotation(rawText) {
   if (/^BWH /i.test(s)) return elective(s);
   if (/^HDVCH/i.test(s)) return elective(s);
   if (/^MFB/i.test(s)) return elective(s);
-  if (/^AMB MED PEDS/i.test(s)) return elective("Amb Med Peds");
-  if (/^DevBeh/i.test(s)) return elective("DevBeh");
-  if (/^GI\b/i.test(s)) return elective("GI");
-  if (/^Endo\b/i.test(s)) return elective("Endo");
-  if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return elective("Neuro");
-  if (/^Pulm\b/i.test(s)) return elective("Pulm");
-  if (/^A[&\/]I\b/i.test(s)) return elective("A&I");
-  if (/^CCP\b/i.test(s)) return elective("CCP");
+  if (/^AMB MED PEDS/i.test(s)) return elective(s);
+  if (/^DevBeh/i.test(s)) return elective(s);
+  if (/^GI\b/i.test(s)) return elective(s);
+  if (/^Endo\b/i.test(s)) return elective(s);
+  if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return elective(s);
+  if (/^Pulm\b/i.test(s)) return elective(s);
+  if (/^A[&\/]I\b/i.test(s)) return elective(s);
+  if (/^CCP\b/i.test(s)) return elective(s);
   if (/^Elective$/i.test(s)) return { rotation: "Elective", label: "Elective", displayName: "Elective", category: "Elective", note: "", flags, ...E };
 
   return elective(s);
@@ -2263,7 +2263,9 @@ function _parsePgySheets(workbook) {
       const name = /,/.test(nameRaw) && !/ \(/.test(nameRaw)
         ? nameRaw.split(",").map((p) => p.trim()).reverse().join(" ")
         : nameRaw;
-      residents.push({ id: `imp-${residents.length}`, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: "Corewell Health", requirements: {} });
+      const pgyPrefix = pgy === "MedPeds" ? "mp" : `pgy${pgy.replace(/[^0-9]/g, "")}`;
+      const nameSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      residents.push({ id: `${pgyPrefix}-${nameSlug}`, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: "Corewell Health", requirements: {} });
       assignments.push(Array.from({ length: 13 }, (_, b) => {
         const raw = String(row[blockCols[b]] ?? "").trim();
         const r = normalizeRotation(raw || "Elective");
@@ -3240,6 +3242,7 @@ function getMasterConflicts() {
   const conflicts = [...pgyCoverageConflicts(activeMasterPgy)];
   academicBlocks.forEach((_,column)=>{
     masterRotationOptions.forEach((option)=>{
+      if (option.capacity <= 0 || option.name === "Elective" || option.name === "Vacation") return;
       const assignedRows = masterAssignments.map((row,index)=>row[column].rotation===option.name?index:-1).filter(index=>index>=0);
       if (assignedRows.length>option.capacity) {
         assignedRows.slice(option.capacity).forEach((row)=>conflicts.push({row,column,severity:"danger",title:`${option.name} over capacity`,copy:`Block ${column+1} has ${assignedRows.length} residents; maximum is ${option.capacity}.`}));
