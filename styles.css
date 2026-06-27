@@ -731,6 +731,7 @@ h3 { font-size: 13px; font-weight: 600; }
 .insight-item strong { font-size: 8px; }
 .insight-item small { color: var(--muted); font-size: 7px; margin-top: 2px; }
 .insight-item.danger { background: var(--danger-soft); color: var(--danger); }
+.insight-item.warning { background: #fff7ed; color: #92400e; }
 .insight-item.success { background: var(--teal-soft); color: var(--teal); }
 .fairness-row { align-items: center; display: grid; font-size: 7px; gap: 7px; grid-template-columns: 63px 1fr 24px; margin: 9px 0; }
 .fairness-row strong { font-size: 7px; text-align: right; }

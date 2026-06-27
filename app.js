@@ -1130,6 +1130,7 @@ const initialDemoDraft = scheduleResidents.map((resident, row) => ({
   shifts: buildResidentBlockShifts(resident, row)
 }));
 const scheduleDraftStore = {};
+const scheduleDraftAlertsStore = {};
 const scheduleLifecycleStore = {};
 const persistenceKey = "clarity-schedule-mvp-v2";
 
@@ -1158,6 +1159,7 @@ function loadPersistedAppState() {
     replaceObject(serviceDistributionSettings, saved.serviceDistributionSettings);
     replaceObject(serviceMasterLinks, saved.serviceMasterLinks);
     replaceObject(scheduleDraftStore, saved.scheduleDraftStore);
+    replaceObject(scheduleDraftAlertsStore, saved.scheduleDraftAlertsStore || {});
     replaceObject(scheduleLifecycleStore, saved.scheduleLifecycleStore);
     if (Array.isArray(saved.masterRotationOptions)) masterRotationOptions = saved.masterRotationOptions;
     if (saved.pgyMasterRules) pgyMasterRules = saved.pgyMasterRules;
@@ -1197,6 +1199,7 @@ function persistAppState() {
       serviceDistributionSettings,
       serviceMasterLinks,
       scheduleDraftStore,
+      scheduleDraftAlertsStore,
       scheduleLifecycleStore,
       masterRotationOptions,
       pgyMasterRules,
@@ -1432,7 +1435,166 @@ function serviceRosterTarget(service) {
   return Math.max(1, roleTarget, laneTarget);
 }
 
+// Floor scheduling engine for Purple / Orange (and any floor service with nights + weekends).
+// Implements 5-step generation: weekend plan → night stretches → post-call → weekday fill → alerts.
+function generateFloorScheduleDraft(service, block) {
+  const linked = masterRowsForService(service, block);
+  const target = serviceRosterTarget(service);
+  const selected = [...linked];
+  const used = new Set(selected.map((item) => item.index));
+  for (let offset = 0; selected.length < target && offset < masterResidents.length; offset++) {
+    const index = (block * 3 + configuredServices().indexOf(service) * 5 + offset) % masterResidents.length;
+    if (used.has(index)) continue;
+    const assignment = masterAssignments[index]?.[block - 1]?.rotation;
+    if (["Vacation"].includes(assignment)) continue;
+    selected.push({ resident: masterResidents[index], index, rotation: assignment, supplemental: true });
+    used.add(index);
+  }
+  const roster = selected.slice(0, Math.max(target, linked.length));
+  const n = roster.length;
+  const enabledShifts = ensureServiceBuilderConfig(service).shifts;
+  const lanes = ensureServiceCoverageLanes(service);
+  const dayLane = lanes.find((l) => !/night/i.test(l.name)) || lanes[0];
+  const nightLane = lanes.find((l) => /night/i.test(l.name)) || lanes[0];
+  const alerts = [];
+
+  // STEP 1: Plan weekend assignments — round-robin latin-square fairness.
+  // Types: GOLDEN=both off, FULL_WORK=both worked, SAT_OFF=sat off/sun worked, SUN_OFF=sat worked/sun off.
+  // Intern i does nights in week (i % 4). The night-week Saturday is worked (night shift) and Sunday is
+  // post-call (protected off), so night week implicitly satisfies SUN_OFF for that intern.
+  const GOLDEN = 0, FULL_WORK = 1, SAT_OFF = 2, SUN_OFF = 3;
+  const nonNightTypes = [GOLDEN, FULL_WORK, SAT_OFF];
+  const weekendPlan = roster.map((_, i) => {
+    const nightWk = i % 4;
+    const plan = [null, null, null, null];
+    plan[nightWk] = SUN_OFF;
+    const nonNightWeeks = [0, 1, 2, 3].filter((w) => w !== nightWk);
+    nonNightWeeks.forEach((w, j) => { plan[w] = nonNightTypes[(i + j) % 3]; });
+    return plan;
+  });
+
+  // STEP 2: Assign night stretches — 6 consecutive nights (Mon–Sat) per intern, post-call Sunday.
+  const nightCoverage = Array(28).fill(-1);
+  roster.forEach((_, i) => {
+    const nightWeek = i % 4;
+    const start = nightWeek * 7;
+    for (let d = start; d < start + 6; d++) nightCoverage[d] = i; // Mon(0)…Sat(5) = 6 nights
+  });
+
+  // Check for night coverage gaps — nights not assigned to any resident.
+  const wdNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  for (let d = 0; d < 28; d++) {
+    if (nightCoverage[d] === -1) {
+      alerts.push({ severity: "danger", title: `Night coverage gap on ${wdNames[d % 7]} Wk ${Math.floor(d / 7) + 1}`, copy: "No night resident assigned. Add from call pool." });
+    }
+  }
+
+  // Validate night continuity: after each intern's last night, check handoff night has coverage.
+  roster.forEach((item, i) => {
+    const nightWeek = i % 4;
+    const handoffNight = nightWeek * 7 + 7; // first night after post-call day
+    if (handoffNight < 28 && nightCoverage[handoffNight] === -1) {
+      alerts.push({ severity: "danger", title: `Night handoff gap after ${item.resident.name}`, copy: `Night coverage gap on ${wdNames[handoffNight % 7]} Wk ${Math.floor(handoffNight / 7) + 1}. Add from call pool.` });
+    }
+  });
+
+  // STEP 3 & 4: Build per-resident shifts (nights, post-call, weekends, weekday fill).
+  const minCoverage = lanes[0]?.minimum || 1;
+  const dayCoverage = Array(28).fill(0);
+
+  const drafts = roster.map((item, i) => {
+    const nightWeek = i % 4;
+    const nightStart = nightWeek * 7;
+    const nightEnd = nightStart + 5;
+    const postCallDay = nightStart + 6;
+    const profile = residentProfiles[item.resident?.name];
+
+    const shifts = Array.from({ length: 28 }, (_, d) => {
+      const day = d % 7;   // 0=Mon … 4=Fri, 5=Sat, 6=Sun
+      const week = Math.floor(d / 7);
+
+      // STEP 2: Night stretch (Mon–Sat of nightWeek)
+      if (d >= nightStart && d <= nightEnd) {
+        const isWkndNight = day === 5 && enabledShifts.includes("WKND-N");
+        const val = isWkndNight ? "1815–0700" : "1700–0700";
+        return { ...makeScheduleEntry(val, d), lane: nightLane?.name || "" };
+      }
+
+      // STEP 3: Post-call day — protected, no clinical assignment
+      if (d === postCallDay) return makeScheduleEntry("POST CALL", d);
+
+      // STEP 4a: Weekend assignments from plan
+      if (day === 5 || day === 6) {
+        const wkType = weekendPlan[i][week];
+        const isSat = day === 5;
+        if (wkType === GOLDEN) return makeScheduleEntry("OFF", d);
+        if (wkType === SAT_OFF) {
+          if (isSat) return makeScheduleEntry("OFF", d);
+          const wkndVal = enabledShifts.includes("LONG") ? "0630–1900" : enabledShifts.includes("SHORT") ? "0630–1600" : "0630–1700";
+          return { ...makeScheduleEntry(wkndVal, d), lane: dayLane?.name || "" };
+        }
+        if (wkType === SUN_OFF) {
+          if (!isSat) return makeScheduleEntry("OFF", d);
+          const wkndVal = enabledShifts.includes(i % 2 === 0 ? "LONG" : "SHORT") ? (i % 2 === 0 ? "0630–1900" : "0630–1600") : "0630–1700";
+          return { ...makeScheduleEntry(wkndVal, d), lane: dayLane?.name || "" };
+        }
+        if (wkType === FULL_WORK) {
+          // Alternate LONG/SHORT so we never assign LONG+LONG or SHORT+SHORT in same weekend.
+          // Even interns: Sat=LONG, Sun=SHORT. Odd interns: Sat=SHORT, Sun=LONG.
+          const wantLong = (i % 2 === 0) === isSat;
+          const wkndVal = wantLong && enabledShifts.includes("LONG") ? "0630–1900" : enabledShifts.includes("SHORT") ? "0630–1600" : "0630–1700";
+          return { ...makeScheduleEntry(wkndVal, d), lane: dayLane?.name || "" };
+        }
+        return makeScheduleEntry("OFF", d);
+      }
+
+      // STEP 4b: Weekday protected assignments (skip during nights/post-call — already handled above)
+      if (profile && day === 2 && week % 2 === 0) return makeScheduleEntry("DIDACTIC", d);
+      if (profile && day === (i % 5)) return makeScheduleEntry("CLINIC", d);
+
+      // STEP 4c: Regular weekday day shift
+      return { ...makeScheduleEntry("0630–1700", d), lane: dayLane?.name || "" };
+    });
+
+    // Accumulate day coverage count for gap detection (exclude nights, post-call, off, protected)
+    shifts.forEach((s, d) => {
+      if (!["OFF", "POST CALL", "CLINIC", "DIDACTIC"].includes(s.value) && !/0700$/.test(s.value)) dayCoverage[d]++;
+    });
+
+    return {
+      id: `${block}-${service}-${item.resident.id}`,
+      name: item.resident.name,
+      role: `${item.resident.pgy.replace("PGY-", "P")} · ${item.supplemental ? "Eligible pool" : item.rotation}`,
+      source: item.supplemental ? `Eligible supplement · master: ${item.rotation}` : `Master schedule · ${item.rotation}`,
+      masterLinked: !item.supplemental,
+      weekendPlan: weekendPlan[i],
+      shifts,
+    };
+  });
+
+  // STEP 5: Coverage gap notifications
+  for (let d = 0; d < 28; d++) {
+    if (dayCoverage[d] < minCoverage) {
+      alerts.push({ severity: "warning", title: `Short-staffed on ${wdNames[d % 7]} Wk ${Math.floor(d / 7) + 1}: ${dayCoverage[d]}/${minCoverage} covered`, copy: "Add from call pool to meet minimum coverage." });
+    }
+  }
+
+  // Validate weekend fairness — every intern must have exactly 1 of each type
+  drafts.forEach((dr, i) => {
+    const counts = [0, 0, 0, 0];
+    weekendPlan[i].forEach((t) => counts[t]++);
+    if (counts[GOLDEN] !== 1 || counts[FULL_WORK] !== 1 || counts[SAT_OFF] !== 1 || counts[SUN_OFF] !== 1) {
+      alerts.push({ severity: "warning", title: `Weekend fairness issue: ${dr.name}`, copy: `Golden:${counts[GOLDEN]} FullWork:${counts[FULL_WORK]} SatOff:${counts[SAT_OFF]} SunOff:${counts[SUN_OFF]}` });
+    }
+  });
+
+  scheduleDraftAlertsStore[scheduleDraftKey(block, service)] = alerts;
+  return drafts;
+}
+
 function generateServiceDraft(service, block) {
+  const floorServices = new Set(["Purple", "Orange", "Green Team"]);
+  if (floorServices.has(service)) return generateFloorScheduleDraft(service, block);
   const linked = masterRowsForService(service, block);
   const target = serviceRosterTarget(service);
   const selected = [...linked];
@@ -1724,10 +1886,9 @@ function scheduleView() {
       <aside class="inspector">
         ${addResidentPanelOpen ? addResidentPanel() : selectedEntry ? scheduleCellEditor(selectedResident, selectedEntry, selectedScheduleCell.row, selectedScheduleCell.column, days[selectedScheduleCell.column - weekStart] || ["Day", `Jun ${selectedScheduleCell.column + 1}`]) : `
         <div class="inspector-head"><div><h2>Schedule insights</h2><p>Live checks for ${activeScheduleService || "current team"}</p></div><button class="icon-button inspector-close"><span class="icon" data-icon="close"></span></button></div>
-        <div class="inspector-score"><div class="score-ring"><strong>94</strong><span>score</span></div><div><strong>Balanced four-week draft</strong><span>Night and weekend fairness tracked across the full block</span></div></div>
+        <div class="inspector-score"><div class="score-ring"><strong>${Math.max(0, 100 - (scheduleDraftAlertsStore[scheduleDraftKey()] || []).length * 4)}</strong><span>score</span></div><div><strong>${(scheduleDraftAlertsStore[scheduleDraftKey()] || []).length === 0 ? "Balanced four-week draft" : "Review flagged items below"}</strong><span>Night and weekend fairness tracked across the full block</span></div></div>
         <div class="insight-section"><h3>Coverage</h3>
-          <button class="insight-item danger"><span class="icon" data-icon="alert"></span><span><strong>Week ${selectedScheduleWeek+1} coverage review</strong><small>Call-pool residents can be added to uncovered dates</small></span><span class="icon" data-icon="chevron"></span></button>
-          <button class="insight-item success"><span class="icon" data-icon="check"></span><span><strong>Weekend coverage</strong><small>All day and night roles filled</small></span></button>
+          ${(() => { const draftAlerts = scheduleDraftAlertsStore[scheduleDraftKey()] || []; const coverAlerts = draftAlerts.filter((a) => a.severity === "danger"); const warnAlerts = draftAlerts.filter((a) => a.severity === "warning"); return (coverAlerts.length ? coverAlerts.map((a) => `<button class="insight-item danger"><span class="icon" data-icon="alert"></span><span><strong>${escapeHtml(a.title)}</strong><small>${escapeHtml(a.copy)}</small></span></button>`).join("") : "") + (warnAlerts.length ? warnAlerts.map((a) => `<button class="insight-item warning"><span class="icon" data-icon="alert"></span><span><strong>${escapeHtml(a.title)}</strong><small>${escapeHtml(a.copy)}</small></span></button>`).join("") : "") + (!coverAlerts.length && !warnAlerts.length ? `<button class="insight-item success"><span class="icon" data-icon="check"></span><span><strong>All coverage checks passed</strong><small>No night or staffing gaps found</small></span></button>` : ""); })()}
         </div>
         <div class="insight-section"><h3>Fairness</h3>
           <div class="fairness-bars">
