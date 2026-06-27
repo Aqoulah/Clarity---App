@@ -747,7 +747,10 @@ let masterRotationOptions = [
   { name: "ED", color: "ed", capacity: 4, inpatient: false },
   { name: "Elective", color: "easy", capacity: 20, inpatient: false },
   { name: "Vacation", color: "vacation", capacity: 5, inpatient: false },
-  { name: "Night Float", color: "night", capacity: 3, inpatient: true }
+  { name: "Night Float", color: "night", capacity: 3, inpatient: true },
+  { name: "Floor Senior", color: "floor-senior", capacity: 2, inpatient: true },
+  { name: "Leave", color: "leave", capacity: 0, inpatient: false },
+  { name: "NAP", color: "leave", capacity: 0, inpatient: false }
 ];
 
 let pgyMasterRules = {
@@ -2030,26 +2033,30 @@ function masterImportGateway() {
 // ─── Master Schedule Excel Importer ──────────────────────────────────────────
 
 function normalizeRotation(rawText) {
-  if (!rawText) return { rotation: "Elective", label: "Elective", flags: {} };
+  const E = { isCoreService: false, callPoolEligible: true, internCrossCoberEligible: true, isProtected: false };
+  const C = { isCoreService: true, callPoolEligible: false, internCrossCoberEligible: false, isProtected: false };
+  const P = { isCoreService: false, callPoolEligible: false, internCrossCoberEligible: false, isProtected: true };
+  const base = (rotation, label) => ({ rotation, label: label || rotation, displayName: label || rotation, category: rotation, note: "", flags, ...C });
+  if (!rawText) return { rotation: "Elective", label: "Elective", displayName: "Elective", category: "Elective", note: "", flags: {}, ...E };
   const text = String(rawText).trim();
-  if (!text || /^\d+$/.test(text)) return { rotation: "Elective", label: "Elective", flags: {} };
+  if (!text || /^\d+$/.test(text)) return { rotation: "Elective", label: "Elective", displayName: "Elective", category: "Elective", note: "", flags: {}, ...E };
 
   const flags = {};
   if (/\(call\)/i.test(text)) flags.has_call = true;
   if (/\(NC\)/i.test(text)) flags.no_call = true;
   if (/\(Floors?\)/i.test(text)) flags.is_floor = true;
 
-  // Strip parenthetical suffixes for matching; s is the clean display form
   const s = text.replace(/\s*\(call\)\s*/gi, " ").replace(/\s*\(NC\)\s*/gi, " ").replace(/\s*\(Floors?\)\s*/gi, " ").trim();
-  const elective = (label) => ({ rotation: "Elective", label: label || s, note: s, flags });
+  const elective = (label) => ({ rotation: "Elective", label: label || s, displayName: label || s, category: "Elective", note: s, flags, ...E });
+  const floorSr = (label) => ({ rotation: "Floor Senior", label: label || s, displayName: label || s, category: "Floor Senior", note: "", flags, ...C });
 
-  // LOA / Leave
-  if (/^LOA\b/i.test(s)) return { rotation: "Leave", label: "Leave", note: text, flags };
+  // LOA / FMLA → protected leave
+  if (/LOA|FMLA/i.test(s)) return { rotation: "Leave", label: "LOA", displayName: "LOA", category: "Leave", note: text, flags, ...P };
 
-  // NAP (standalone)
-  if (/^NAP\b/i.test(s) && !/Orange|NICU|Psych|senior|Tox/i.test(s.replace(/^NAP\b/i, ""))) return { rotation: "NAP", label: "NAP", flags };
+  // NAP standalone → protected
+  if (/^NAP\b/i.test(s) && !/Orange|NICU|Psych|senior|Tox/i.test(s.replace(/^NAP\b/i, ""))) return { rotation: "NAP", label: "NAP", displayName: "NAP", category: "NAP", note: "", flags, ...P };
 
-  // Night Float — any label that resolves primarily to night coverage
+  // Night Float
   if (/^Night Float/i.test(s) ||
       /^(Night|Nights)\/(Tox|ID|Ortho|ENT|Rheum|Palliative|A\/I)/i.test(s) ||
       /^(ENT|BMT|Ortho|Ophtho|Palliative|Rad|Advo|Derm\s+Tox|GI|Adv GI)\s*\/\s*Nights?$/i.test(s) ||
@@ -2057,98 +2064,79 @@ function normalizeRotation(rawText) {
       /\/ Nights?$|\/ Night$/i.test(s) ||
       /^GI Night Float/i.test(s) ||
       /^Night\/ A\/I/i.test(s)) {
-    return { rotation: "Night Float", label: "Night Float", flags };
+    return base("Night Float", "Night Float");
   }
 
-  // Purple
-  if (/^Purple$/i.test(s)) return { rotation: "Purple", label: "Purple", flags };
-  if (/^Purple\/Admit|^Admit\/?Orange?\/Purple|^Admit\/Purple/i.test(s)) return { rotation: "Purple/Admit", label: "Purple/Admit", flags };
+  // Purple floor (intern core service)
+  if (/^Purple$/i.test(s)) return base("Purple", "Purple");
+  // Purple/Admit and senior admit variants → Floor Senior
+  if (/^Purple\/Admit|^Admit\/?Orange?\/Purple|^Admit\/Purple/i.test(s)) return floorSr(s);
 
-  // Orange
-  if (/^Orange$/i.test(s)) return { rotation: "Orange", label: "Orange", flags };
-  if (/^(AGP\/Orange|Orange\/AGP)/i.test(s)) return { rotation: "Orange", label: "Orange", note: "AGP split", flags: { ...flags, is_split: true } };
+  // AGP standalone / AGP with non-Orange suffix → Floor Senior
+  if (/^AGP$/i.test(s) || (/^AGP\//i.test(s) && !/^AGP\/Orange/i.test(s))) return floorSr(s);
 
-  // Gold/NICU (also catches NICU/Gold, Gold alone)
-  if (/^Gold\/NICU$|^NICU\/Gold$|^NICU\/gold$|^Gold\/\s*NICU FMLA|^Gold$/i.test(s)) return { rotation: "Gold/NICU", label: "Gold/NICU", flags };
+  // Orange floor (intern core service)
+  if (/^Orange$/i.test(s)) return base("Orange", "Orange");
+  // AGP/Orange, Orange/AGP, Orange/ENT and other senior Orange splits → Floor Senior
+  if (/^(AGP\/Orange|Orange\/AGP)/i.test(s)) return floorSr("AGP/Orange");
+  if (/^Orange\//i.test(s)) return floorSr(s);
+
+  // Gold/NICU
+  if (/^Gold\/NICU$|^NICU\/Gold$|^NICU\/gold$|^Gold\/\s*NICU FMLA|^Gold$/i.test(s)) return base("Gold/NICU", "Gold/NICU");
   if (/^Gold\s*\/\s*CCP/i.test(s) || /^CCP\s*\/\s*Gold\b/i.test(s)) return elective("CCP/Gold");
 
-  // Clinic/Advo
-  if (/^Clinic\/Advo/i.test(s) || /^Chief block/i.test(s)) return { rotation: "Clinic/Advo", label: "Clinic/Advo", flags };
+  // Clinic/Advo — call-pool eligible (not a core service)
+  if (/^Clinic\/Advo/i.test(s) || /^Chief block/i.test(s)) return { rotation: "Clinic/Advo", label: "Clinic/Advo", displayName: "Clinic/Advo", category: "Clinic/Advo", note: "", flags, isCoreService: false, callPoolEligible: true, internCrossCoberEligible: true, isProtected: false };
 
-  // Cardiology (all variants)
-  if (/^Cardiology/i.test(s)) return { rotation: "Cardiology", label: "Cardiology", flags };
+  // Cardiology
+  if (/^Cardiology/i.test(s)) return base("Cardiology", "Cardiology");
 
-  // PHO (standalone or PHO *)
-  if (/^PHO\b/i.test(s) && !/Nephro|floor|endo/i.test(s.replace(/^PHO[\s*]*/i, ""))) return { rotation: "PHO", label: "PHO", flags };
+  // PHO
+  if (/^PHO\b/i.test(s) && !/Nephro|floor|endo/i.test(s.replace(/^PHO[\s*]*/i, ""))) return base("PHO", "PHO");
 
-  // Newborn
-  if (/^Newborn/i.test(s)) return { rotation: "Newborn", label: "Newborn", flags };
+  // Newborn — core, but also intern cross-cover eligible
+  if (/^Newborn/i.test(s)) return { rotation: "Newborn", label: "Newborn", displayName: "Newborn", category: "Newborn", note: "", flags, isCoreService: true, callPoolEligible: false, internCrossCoberEligible: true, isProtected: false };
 
-  // Adolescent
-  if (/^Adol/i.test(s)) return { rotation: "Adolescent", label: "Adolescent", flags };
+  // Adolescent — both call-pool (PGY-2/3) and intern cross-cover (PGY-1); not a gating core service
+  if (/^Adol/i.test(s)) return { rotation: "Adolescent", label: "Adolescent", displayName: "Adolescent", category: "Adolescent", note: "", flags, isCoreService: false, callPoolEligible: true, internCrossCoberEligible: true, isProtected: false };
 
   // PICU
-  if (/^PICU$/i.test(s) || /^Adv PICU/i.test(s)) return { rotation: "PICU", label: "PICU", flags };
+  if (/^PICU$/i.test(s) || /^Adv PICU/i.test(s)) return base("PICU", "PICU");
+  if (/^NICU\/PICU$|^PICU\/NICU$/i.test(s)) return base("PICU", "PICU");
 
-  // NICU (standalone)
-  if (/^NICU$/i.test(s) || /^Adv NICU/i.test(s)) return { rotation: "NICU", label: "NICU", flags };
-  if (/^NICU\/PICU$|^PICU\/NICU$/i.test(s)) return { rotation: "PICU", label: "PICU", flags };
+  // NICU standalone
+  if (/^NICU$/i.test(s) || /^Adv NICU/i.test(s)) return base("NICU", "NICU");
 
-  // ED (standalone)
-  if (/^ED$/i.test(s)) return { rotation: "ED", label: "ED", flags };
+  // ED
+  if (/^ED$/i.test(s)) return base("ED", "ED");
 
-  // RAT (standalone)
-  if (/^RAT\b/i.test(s) && !/NICU|ED/i.test(s.replace(/^RAT\b/i, ""))) return { rotation: "RAT", label: "RAT", flags };
+  // RAT — call-pool eligible (seniors only)
+  if (/^RAT\b/i.test(s) && !/NICU|ED/i.test(s.replace(/^RAT\b/i, ""))) return { rotation: "RAT", label: "RAT", displayName: "RAT", category: "RAT", note: "", flags, isCoreService: false, callPoolEligible: true, internCrossCoberEligible: false, isProtected: false };
 
-  // Research
-  if (/^Research/i.test(s)) return { rotation: "Research", label: "Research", flags };
+  // Research — call-pool eligible
+  if (/^Research/i.test(s)) return { rotation: "Research", label: "Research", displayName: "Research", category: "Research", note: "", flags, isCoreService: false, callPoolEligible: true, internCrossCoberEligible: false, isProtected: false };
 
-  // Board Review
-  if (/^Board review/i.test(s)) return { rotation: "Board Review", label: "Board Review", flags };
+  // Board Review — call-pool eligible
+  if (/^Board review/i.test(s)) return { rotation: "Board Review", label: "Board Review", displayName: "Board Review", category: "Board Review", note: "", flags, isCoreService: false, callPoolEligible: true, internCrossCoberEligible: false, isProtected: false };
 
-  // Vacation
-  if (/^Vacation$/i.test(s)) return { rotation: "Vacation", label: "Vacation", flags };
+  // Vacation — neither pool
+  if (/^Vacation$/i.test(s)) return { rotation: "Vacation", label: "Vacation", displayName: "Vacation", category: "Vacation", note: "", flags, isCoreService: false, callPoolEligible: false, internCrossCoberEligible: false, isProtected: false };
 
-  // PCE → Elective (label = cleaned PCE name)
+  // Electives
   if (/^PCE[\s\-\/]/i.test(s) || /^PCE$/i.test(s)) return elective(s);
-
-  // BWH → Elective (label = full BWH rotation name)
   if (/^BWH /i.test(s)) return elective(s);
-
-  // HDVCH → Elective
   if (/^HDVCH/i.test(s)) return elective(s);
-
-  // MFB → Elective
   if (/^MFB/i.test(s)) return elective(s);
-
-  // AMB MED PEDS → Elective
   if (/^AMB MED PEDS/i.test(s)) return elective("Amb Med Peds");
-
-  // DevBeh → Elective
   if (/^DevBeh/i.test(s)) return elective("DevBeh");
-
-  // GI (non-night) → Elective
   if (/^GI\b/i.test(s)) return elective("GI");
-
-  // Endo → Elective
   if (/^Endo\b/i.test(s)) return elective("Endo");
-
-  // Neuro → Elective
   if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return elective("Neuro");
-
-  // Pulm → Elective
   if (/^Pulm\b/i.test(s)) return elective("Pulm");
-
-  // A&I / A/I → Elective
   if (/^A[&\/]I\b/i.test(s)) return elective("A&I");
-
-  // CCP → Elective
   if (/^CCP\b/i.test(s)) return elective("CCP");
+  if (/^Elective$/i.test(s)) return { rotation: "Elective", label: "Elective", displayName: "Elective", category: "Elective", note: "", flags, ...E };
 
-  // Elective direct
-  if (/^Elective$/i.test(s)) return { rotation: "Elective", label: "Elective", flags };
-
-  // Catch-all: preserve cleaned text as label
   return elective(s);
 }
 
@@ -2216,8 +2204,8 @@ function _parseMasterWide(ws, residentWs) {
     residents.push({ id, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: profile.institution || "Corewell Health", requirements: {} });
     assignments.push(Array.from({ length: 13 }, (_, b) => {
       const raw = String(row[blockCols[b]] ?? "").trim();
-      const { rotation, label, note, flags } = normalizeRotation(raw || "Elective");
-      return { rotation, label: label || rotation, raw, note: note || "", locked: false, ...flags };
+      const r = normalizeRotation(raw || "Elective");
+      return { rotation: r.rotation, label: r.label, displayName: r.displayName, category: r.category, callPoolEligible: r.callPoolEligible, internCrossCoberEligible: r.internCrossCoberEligible, isProtected: r.isProtected, isCoreService: r.isCoreService, raw, note: r.note || "", locked: false, ...r.flags };
     }));
   });
   return { residents, assignments };
@@ -2238,8 +2226,8 @@ function _parseMasterLong(ws) {
       blocks: Array.from({ length: 13 }, () => ({ rotation: "Elective", raw: "", note: "", locked: false }))
     });
     if (blockNum >= 0 && blockNum < 13) {
-      const { rotation, label, note, flags } = normalizeRotation(rawLabel || String(row[5]).trim() || "Elective");
-      resMap.get(id).blocks[blockNum] = { rotation, label: label || rotation, raw: rawLabel, note: note || "", locked: false, ...flags };
+      const r = normalizeRotation(rawLabel || String(row[5]).trim() || "Elective");
+      resMap.get(id).blocks[blockNum] = { rotation: r.rotation, label: r.label, displayName: r.displayName, category: r.category, callPoolEligible: r.callPoolEligible, internCrossCoberEligible: r.internCrossCoberEligible, isProtected: r.isProtected, isCoreService: r.isCoreService, raw: rawLabel, note: r.note || "", locked: false, ...r.flags };
     }
   });
   const residents = [], assignments = [];
@@ -2278,8 +2266,8 @@ function _parsePgySheets(workbook) {
       residents.push({ id: `imp-${residents.length}`, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: "Corewell Health", requirements: {} });
       assignments.push(Array.from({ length: 13 }, (_, b) => {
         const raw = String(row[blockCols[b]] ?? "").trim();
-        const { rotation, note, flags } = normalizeRotation(raw || "Elective");
-        return { rotation, raw, note: note || "", locked: false, ...flags };
+        const r = normalizeRotation(raw || "Elective");
+        return { rotation: r.rotation, label: r.label, displayName: r.displayName, category: r.category, callPoolEligible: r.callPoolEligible, internCrossCoberEligible: r.internCrossCoberEligible, isProtected: r.isProtected, isCoreService: r.isCoreService, raw, note: r.note || "", locked: false, ...r.flags };
       }));
     });
   });
@@ -2545,22 +2533,42 @@ function serviceCoverageMatrix(services) {
   </div>`;
 }
 
+function masterResidentsByFlags(blockIndex, opts = {}) {
+  let rows = masterResidents.map((resident, row) => ({
+    resident, row, assignment: masterAssignments[row]?.[blockIndex]
+  })).filter(({ assignment }) => {
+    if (!assignment) return false;
+    if (opts.isProtected) return !!assignment.isProtected;
+    if (assignment.isProtected) return false;
+    if (opts.callPoolEligible && !assignment.callPoolEligible) return false;
+    if (opts.internCrossCoberEligible && !assignment.internCrossCoberEligible) return false;
+    if (opts.isCoreService && !assignment.isCoreService) return false;
+    return true;
+  });
+  if (opts.pgy) rows = rows.filter(({ resident }) => resident.pgy === opts.pgy);
+  if (opts.excludePgy) rows = rows.filter(({ resident }) => resident.pgy !== opts.excludePgy);
+  if (opts.limit) rows = rows.slice(0, opts.limit);
+  return rows.map(({ resident, assignment }) => ({
+    ...resident,
+    sourceRotation: assignment.category || assignment.rotation,
+    source: `Master schedule · ${assignment.displayName || assignment.label || assignment.rotation}`
+  }));
+}
+
 function callPoolDefinitions() {
   return [
-    { name: "Clinic Call / Jeopardy", min: 18, max: 24, copy: "Residents in elective or call-eligible blocks", rotations: ["Elective", "Clinic/Advo", "Vacation"] },
-    { name: "Floor Intern Cross Cover", min: 10, max: 13, copy: "Interns eligible for floor cross-cover", rotations: ["Elective", "Clinic/Advo", "Vacation"], pgy: "PGY-1" },
-    { name: "No call: seniors", min: 8, max: 12, copy: "Seniors protected from call", rotations: ["PICU", "NICU", "Night Float", "ED"], excludePgy: "PGY-1" },
-    { name: "No call: interns", min: 3, max: 6, copy: "Interns protected from call", rotations: ["Gold/NICU", "PHO", "Newborn", "ED"], pgy: "PGY-1" },
-    { name: "LOA / unavailable", min: 0, max: 3, copy: "Leave, maternity, medical, or unavailable", rotations: ["Vacation"] }
+    { name: "Clinic Call / Jeopardy", min: 18, max: 24, copy: "PGY-2 and PGY-3 in call-eligible blocks", callPoolEligible: true, excludePgy: "PGY-1" },
+    { name: "Floor Intern Cross Cover", min: 10, max: 13, copy: "PGY-1 interns eligible for floor cross-cover", internCrossCoberEligible: true, pgy: "PGY-1" },
+    { name: "No call: seniors", min: 8, max: 12, copy: "Seniors on core services (protected from call)", isCoreService: true, excludePgy: "PGY-1" },
+    { name: "No call: interns", min: 3, max: 6, copy: "Interns on core services (protected from call)", isCoreService: true, pgy: "PGY-1" },
+    { name: "LOA / unavailable", min: 0, max: 3, copy: "Leave, NAP, FMLA, or unavailable", isProtected: true }
   ];
 }
 
 function callPoolAssignments(pool, blockIndex) {
-  return masterResidentsByRotations(blockIndex, pool.rotations, {
-    pgy: pool.pgy,
-    excludePgy: pool.excludePgy,
-    limit: pool.max + 6
-  });
+  const useFlags = pool.callPoolEligible || pool.internCrossCoberEligible || pool.isCoreService || pool.isProtected;
+  if (useFlags) return masterResidentsByFlags(blockIndex, { ...pool, limit: pool.max + 6 });
+  return masterResidentsByRotations(blockIndex, pool.rotations || [], { pgy: pool.pgy, excludePgy: pool.excludePgy, limit: pool.max + 6 });
 }
 
 function callPoolExcelView(pools, activePool) {
@@ -2633,8 +2641,9 @@ function callPoolMatrix(pools) {
 function callPoolDetailPanel(pool) {
   const residents = callPoolAssignments(pool, currentBlock - 1);
   const status = coverageStatusFor(residents.length, pool);
+  const poolSource = pool.callPoolEligible ? "call-eligible rotations" : pool.internCrossCoberEligible ? "intern cross-cover rotations" : pool.isProtected ? "protected/LOA rotations" : pool.isCoreService ? "core service rotations" : (pool.rotations || []).map(escapeHtml).join(", ");
   return `<section class="panel service-roster-detail">
-    <div class="panel-header"><div><h2>${escapeHtml(pool.name)} details</h2><p>Block ${currentBlock} · derived from master rotations: ${pool.rotations.map(escapeHtml).join(", ")}</p></div><span class="status-pill ${status === "met" ? "ready" : "review"}">${status === "met" ? "In range" : status}</span></div>
+    <div class="panel-header"><div><h2>${escapeHtml(pool.name)} details</h2><p>Block ${currentBlock} · derived from master ${poolSource}</p></div><span class="status-pill ${status === "met" ? "ready" : "review"}">${status === "met" ? "In range" : status}</span></div>
     <div class="service-roster-summary">
       <article><small>Eligible</small><strong>${residents.length}</strong><span>Target ${pool.min}-${pool.max}</span></article>
       <article><small>Source</small><strong>Master schedule</strong><span>${pool.copy}</span></article>
@@ -3135,15 +3144,22 @@ function editableMasterGridHtml() {
 }
 
 function masterAssignmentCell(row, column, assignment) {
-  const option = masterRotationOptions.find((item) => item.name === assignment.rotation) || masterRotationOptions[0];
+  const cat = assignment.category || assignment.rotation;
+  const option = masterRotationOptions.find((item) => item.name === cat) || masterRotationOptions.find((item) => item.name === assignment.rotation) || masterRotationOptions[0];
   const conflicts = getCellConflicts(row, column);
-  const sublabel = assignment.rotation === "Elective" && assignment.label && assignment.label !== "Elective"
-    ? `<span class="cell-elective-label" title="${escapeHtml(assignment.raw || assignment.label)}">${escapeHtml(assignment.label)}</span>` : "";
-  return `<div class="master-assignment-cell ${option.color} ${assignment.locked ? "locked" : ""} ${conflicts.length ? "has-conflict" : ""}" data-master-row="${row}" data-master-column="${column}" draggable="${assignment.locked ? "false" : "true"}">
-    <select class="master-rotation-select" aria-label="${masterResidents[row].name} Block ${column+1} rotation" ${assignment.locked ? "disabled" : ""}>
+  const pgy = masterResidents[row]?.pgy;
+  const sublabel = assignment.displayName && assignment.displayName !== assignment.rotation
+    ? `<span class="cell-elective-label" title="${escapeHtml(assignment.raw || assignment.displayName)}">${escapeHtml(assignment.displayName)}</span>` : "";
+  const showCP = assignment.callPoolEligible && pgy && pgy !== "PGY-1";
+  const showXC = assignment.internCrossCoberEligible && pgy === "PGY-1";
+  const badge = showCP ? `<span class="cell-badge cp" title="Call pool eligible">CP</span>` : showXC ? `<span class="cell-badge xc" title="Intern cross-cover eligible">XC</span>` : "";
+  const protClass = assignment.isProtected ? "protected" : "";
+  return `<div class="master-assignment-cell ${option.color} ${protClass} ${assignment.locked ? "locked" : ""} ${conflicts.length ? "has-conflict" : ""}" data-master-row="${row}" data-master-column="${column}" draggable="${(assignment.locked || assignment.isProtected) ? "false" : "true"}">
+    <select class="master-rotation-select" aria-label="${masterResidents[row].name} Block ${column+1} rotation" ${(assignment.locked || assignment.isProtected) ? "disabled" : ""}>
       ${masterRotationOptions.map((rotation)=>`<option value="${rotation.name}" ${rotation.name===assignment.rotation?"selected":""}>${rotation.name}</option>`).join("")}
     </select>
     ${sublabel}
+    ${badge}
     <button class="cell-lock" aria-label="${assignment.locked?"Unlock":"Lock"} ${masterResidents[row].name} Block ${column+1}"><span class="icon" data-icon="${assignment.locked?"check":"more"}"></span></button>
     ${conflicts.length ? `<span class="cell-warning" title="${conflicts[0].title}"><span class="icon" data-icon="alert"></span></span>` : ""}
   </div>`;
