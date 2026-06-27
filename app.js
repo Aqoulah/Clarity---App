@@ -2030,23 +2030,24 @@ function masterImportGateway() {
 // ─── Master Schedule Excel Importer ──────────────────────────────────────────
 
 function normalizeRotation(rawText) {
-  if (!rawText) return { rotation: "Elective", flags: {} };
+  if (!rawText) return { rotation: "Elective", label: "Elective", flags: {} };
   const text = String(rawText).trim();
-  if (!text || /^\d+$/.test(text)) return { rotation: "Elective", flags: {} };
+  if (!text || /^\d+$/.test(text)) return { rotation: "Elective", label: "Elective", flags: {} };
 
   const flags = {};
   if (/\(call\)/i.test(text)) flags.has_call = true;
   if (/\(NC\)/i.test(text)) flags.no_call = true;
   if (/\(Floors?\)/i.test(text)) flags.is_floor = true;
 
-  // Strip parenthetical suffixes for matching (keep for note)
-  let s = text.replace(/\s*\(call\)\s*/gi, " ").replace(/\s*\(NC\)\s*/gi, " ").replace(/\s*\(Floors?\)\s*/gi, " ").trim();
+  // Strip parenthetical suffixes for matching; s is the clean display form
+  const s = text.replace(/\s*\(call\)\s*/gi, " ").replace(/\s*\(NC\)\s*/gi, " ").replace(/\s*\(Floors?\)\s*/gi, " ").trim();
+  const elective = (label) => ({ rotation: "Elective", label: label || s, note: s, flags });
 
   // LOA / Leave
-  if (/^LOA\b/i.test(s)) return { rotation: "Leave", note: text, flags };
+  if (/^LOA\b/i.test(s)) return { rotation: "Leave", label: "Leave", note: text, flags };
 
   // NAP (standalone)
-  if (/^NAP\b/i.test(s) && !/Orange|NICU|Psych|senior|Tox/i.test(s.replace(/^NAP\b/i, ""))) return { rotation: "NAP", flags };
+  if (/^NAP\b/i.test(s) && !/Orange|NICU|Psych|senior|Tox/i.test(s.replace(/^NAP\b/i, ""))) return { rotation: "NAP", label: "NAP", flags };
 
   // Night Float — any label that resolves primarily to night coverage
   if (/^Night Float/i.test(s) ||
@@ -2056,99 +2057,99 @@ function normalizeRotation(rawText) {
       /\/ Nights?$|\/ Night$/i.test(s) ||
       /^GI Night Float/i.test(s) ||
       /^Night\/ A\/I/i.test(s)) {
-    return { rotation: "Night Float", flags };
+    return { rotation: "Night Float", label: "Night Float", flags };
   }
 
   // Purple
-  if (/^Purple$/i.test(s)) return { rotation: "Purple", flags };
-  if (/^Purple\/Admit|^Admit\/?Orange?\/Purple|^Admit\/Purple/i.test(s)) return { rotation: "Purple/Admit", flags };
+  if (/^Purple$/i.test(s)) return { rotation: "Purple", label: "Purple", flags };
+  if (/^Purple\/Admit|^Admit\/?Orange?\/Purple|^Admit\/Purple/i.test(s)) return { rotation: "Purple/Admit", label: "Purple/Admit", flags };
 
   // Orange
-  if (/^Orange$/i.test(s)) return { rotation: "Orange", flags };
-  if (/^(AGP\/Orange|Orange\/AGP)/i.test(s)) return { rotation: "Orange", note: "AGP split", flags: { ...flags, is_split: true } };
+  if (/^Orange$/i.test(s)) return { rotation: "Orange", label: "Orange", flags };
+  if (/^(AGP\/Orange|Orange\/AGP)/i.test(s)) return { rotation: "Orange", label: "Orange", note: "AGP split", flags: { ...flags, is_split: true } };
 
   // Gold/NICU (also catches NICU/Gold, Gold alone)
-  if (/^Gold\/NICU$|^NICU\/Gold$|^NICU\/gold$|^Gold\/\s*NICU FMLA|^Gold$/i.test(s)) return { rotation: "Gold/NICU", flags };
-  if (/^Gold\s*\/\s*CCP/i.test(s) || /^CCP\s*\/\s*Gold\b/i.test(s)) return { rotation: "Elective", note: "CCP/Gold", flags };
+  if (/^Gold\/NICU$|^NICU\/Gold$|^NICU\/gold$|^Gold\/\s*NICU FMLA|^Gold$/i.test(s)) return { rotation: "Gold/NICU", label: "Gold/NICU", flags };
+  if (/^Gold\s*\/\s*CCP/i.test(s) || /^CCP\s*\/\s*Gold\b/i.test(s)) return elective("CCP/Gold");
 
   // Clinic/Advo
-  if (/^Clinic\/Advo/i.test(s) || /^Chief block/i.test(s)) return { rotation: "Clinic/Advo", flags };
+  if (/^Clinic\/Advo/i.test(s) || /^Chief block/i.test(s)) return { rotation: "Clinic/Advo", label: "Clinic/Advo", flags };
 
   // Cardiology (all variants)
-  if (/^Cardiology/i.test(s)) return { rotation: "Cardiology", flags };
+  if (/^Cardiology/i.test(s)) return { rotation: "Cardiology", label: "Cardiology", flags };
 
   // PHO (standalone or PHO *)
-  if (/^PHO\b/i.test(s) && !/Nephro|floor|endo/i.test(s.replace(/^PHO[\s*]*/i, ""))) return { rotation: "PHO", flags };
+  if (/^PHO\b/i.test(s) && !/Nephro|floor|endo/i.test(s.replace(/^PHO[\s*]*/i, ""))) return { rotation: "PHO", label: "PHO", flags };
 
   // Newborn
-  if (/^Newborn/i.test(s)) return { rotation: "Newborn", flags };
+  if (/^Newborn/i.test(s)) return { rotation: "Newborn", label: "Newborn", flags };
 
   // Adolescent
-  if (/^Adol/i.test(s)) return { rotation: "Adolescent", flags };
+  if (/^Adol/i.test(s)) return { rotation: "Adolescent", label: "Adolescent", flags };
 
   // PICU
-  if (/^PICU$/i.test(s) || /^Adv PICU/i.test(s)) return { rotation: "PICU", flags };
+  if (/^PICU$/i.test(s) || /^Adv PICU/i.test(s)) return { rotation: "PICU", label: "PICU", flags };
 
   // NICU (standalone)
-  if (/^NICU$/i.test(s) || /^Adv NICU/i.test(s)) return { rotation: "NICU", flags };
-  if (/^NICU\/PICU$|^PICU\/NICU$/i.test(s)) return { rotation: "PICU", flags };
+  if (/^NICU$/i.test(s) || /^Adv NICU/i.test(s)) return { rotation: "NICU", label: "NICU", flags };
+  if (/^NICU\/PICU$|^PICU\/NICU$/i.test(s)) return { rotation: "PICU", label: "PICU", flags };
 
   // ED (standalone)
-  if (/^ED$/i.test(s)) return { rotation: "ED", flags };
+  if (/^ED$/i.test(s)) return { rotation: "ED", label: "ED", flags };
 
   // RAT (standalone)
-  if (/^RAT\b/i.test(s) && !/NICU|ED/i.test(s.replace(/^RAT\b/i, ""))) return { rotation: "RAT", flags };
+  if (/^RAT\b/i.test(s) && !/NICU|ED/i.test(s.replace(/^RAT\b/i, ""))) return { rotation: "RAT", label: "RAT", flags };
 
   // Research
-  if (/^Research/i.test(s)) return { rotation: "Research", flags };
+  if (/^Research/i.test(s)) return { rotation: "Research", label: "Research", flags };
 
   // Board Review
-  if (/^Board review/i.test(s)) return { rotation: "Board Review", flags };
+  if (/^Board review/i.test(s)) return { rotation: "Board Review", label: "Board Review", flags };
 
   // Vacation
-  if (/^Vacation$/i.test(s)) return { rotation: "Vacation", flags };
+  if (/^Vacation$/i.test(s)) return { rotation: "Vacation", label: "Vacation", flags };
 
-  // PCE → Elective
-  if (/^PCE[\s\-\/]/i.test(s) || /^PCE$/i.test(s)) return { rotation: "Elective", note: text, flags };
+  // PCE → Elective (label = cleaned PCE name)
+  if (/^PCE[\s\-\/]/i.test(s) || /^PCE$/i.test(s)) return elective(s);
 
-  // BWH → Elective (Bowen rotations)
-  if (/^BWH /i.test(s)) return { rotation: "Elective", note: text, flags };
+  // BWH → Elective (label = full BWH rotation name)
+  if (/^BWH /i.test(s)) return elective(s);
 
   // HDVCH → Elective
-  if (/^HDVCH/i.test(s)) return { rotation: "Elective", note: text, flags };
+  if (/^HDVCH/i.test(s)) return elective(s);
 
   // MFB → Elective
-  if (/^MFB/i.test(s)) return { rotation: "Elective", note: text, flags };
+  if (/^MFB/i.test(s)) return elective(s);
 
   // AMB MED PEDS → Elective
-  if (/^AMB MED PEDS/i.test(s)) return { rotation: "Elective", note: text, flags };
+  if (/^AMB MED PEDS/i.test(s)) return elective("Amb Med Peds");
 
   // DevBeh → Elective
-  if (/^DevBeh/i.test(s)) return { rotation: "Elective", note: "DevBeh", flags };
+  if (/^DevBeh/i.test(s)) return elective("DevBeh");
 
   // GI (non-night) → Elective
-  if (/^GI\b/i.test(s)) return { rotation: "Elective", note: "GI", flags };
+  if (/^GI\b/i.test(s)) return elective("GI");
 
   // Endo → Elective
-  if (/^Endo\b/i.test(s)) return { rotation: "Elective", note: "Endo", flags };
+  if (/^Endo\b/i.test(s)) return elective("Endo");
 
   // Neuro → Elective
-  if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return { rotation: "Elective", note: "Neuro", flags };
+  if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return elective("Neuro");
 
   // Pulm → Elective
-  if (/^Pulm\b/i.test(s)) return { rotation: "Elective", note: "Pulm", flags };
+  if (/^Pulm\b/i.test(s)) return elective("Pulm");
 
   // A&I / A/I → Elective
-  if (/^A[&\/]I\b/i.test(s)) return { rotation: "Elective", note: "A&I", flags };
+  if (/^A[&\/]I\b/i.test(s)) return elective("A&I");
 
   // CCP → Elective
-  if (/^CCP\b/i.test(s)) return { rotation: "Elective", note: "CCP", flags };
+  if (/^CCP\b/i.test(s)) return elective("CCP");
 
   // Elective direct
-  if (/^Elective$/i.test(s)) return { rotation: "Elective", flags };
+  if (/^Elective$/i.test(s)) return { rotation: "Elective", label: "Elective", flags };
 
-  // Catch-all
-  return { rotation: "Elective", note: text, flags };
+  // Catch-all: preserve cleaned text as label
+  return elective(s);
 }
 
 function parseChiefMasterSchedule(workbook) {
@@ -2215,8 +2216,8 @@ function _parseMasterWide(ws, residentWs) {
     residents.push({ id, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: profile.institution || "Corewell Health", requirements: {} });
     assignments.push(Array.from({ length: 13 }, (_, b) => {
       const raw = String(row[blockCols[b]] ?? "").trim();
-      const { rotation, note, flags } = normalizeRotation(raw || "Elective");
-      return { rotation, raw, note: note || "", locked: false, ...flags };
+      const { rotation, label, note, flags } = normalizeRotation(raw || "Elective");
+      return { rotation, label: label || rotation, raw, note: note || "", locked: false, ...flags };
     }));
   });
   return { residents, assignments };
@@ -2237,8 +2238,8 @@ function _parseMasterLong(ws) {
       blocks: Array.from({ length: 13 }, () => ({ rotation: "Elective", raw: "", note: "", locked: false }))
     });
     if (blockNum >= 0 && blockNum < 13) {
-      const { rotation, note, flags } = normalizeRotation(rawLabel || String(row[5]).trim() || "Elective");
-      resMap.get(id).blocks[blockNum] = { rotation, raw: rawLabel, note: note || "", locked: false, ...flags };
+      const { rotation, label, note, flags } = normalizeRotation(rawLabel || String(row[5]).trim() || "Elective");
+      resMap.get(id).blocks[blockNum] = { rotation, label: label || rotation, raw: rawLabel, note: note || "", locked: false, ...flags };
     }
   });
   const residents = [], assignments = [];
@@ -3136,10 +3137,13 @@ function editableMasterGridHtml() {
 function masterAssignmentCell(row, column, assignment) {
   const option = masterRotationOptions.find((item) => item.name === assignment.rotation) || masterRotationOptions[0];
   const conflicts = getCellConflicts(row, column);
+  const sublabel = assignment.rotation === "Elective" && assignment.label && assignment.label !== "Elective"
+    ? `<span class="cell-elective-label" title="${escapeHtml(assignment.raw || assignment.label)}">${escapeHtml(assignment.label)}</span>` : "";
   return `<div class="master-assignment-cell ${option.color} ${assignment.locked ? "locked" : ""} ${conflicts.length ? "has-conflict" : ""}" data-master-row="${row}" data-master-column="${column}" draggable="${assignment.locked ? "false" : "true"}">
     <select class="master-rotation-select" aria-label="${masterResidents[row].name} Block ${column+1} rotation" ${assignment.locked ? "disabled" : ""}>
       ${masterRotationOptions.map((rotation)=>`<option value="${rotation.name}" ${rotation.name===assignment.rotation?"selected":""}>${rotation.name}</option>`).join("")}
     </select>
+    ${sublabel}
     <button class="cell-lock" aria-label="${assignment.locked?"Unlock":"Lock"} ${masterResidents[row].name} Block ${column+1}"><span class="icon" data-icon="${assignment.locked?"check":"more"}"></span></button>
     ${conflicts.length ? `<span class="cell-warning" title="${conflicts[0].title}"><span class="icon" data-icon="alert"></span></span>` : ""}
   </div>`;
