@@ -2027,6 +2027,264 @@ function masterImportGateway() {
   </section>`;
 }
 
+// ─── Master Schedule Excel Importer ──────────────────────────────────────────
+
+function normalizeRotation(rawText) {
+  if (!rawText) return { rotation: "Elective", flags: {} };
+  const text = String(rawText).trim();
+  if (!text || /^\d+$/.test(text)) return { rotation: "Elective", flags: {} };
+
+  const flags = {};
+  if (/\(call\)/i.test(text)) flags.has_call = true;
+  if (/\(NC\)/i.test(text)) flags.no_call = true;
+  if (/\(Floors?\)/i.test(text)) flags.is_floor = true;
+
+  // Strip parenthetical suffixes for matching (keep for note)
+  let s = text.replace(/\s*\(call\)\s*/gi, " ").replace(/\s*\(NC\)\s*/gi, " ").replace(/\s*\(Floors?\)\s*/gi, " ").trim();
+
+  // LOA / Leave
+  if (/^LOA\b/i.test(s)) return { rotation: "Leave", note: text, flags };
+
+  // NAP (standalone)
+  if (/^NAP\b/i.test(s) && !/Orange|NICU|Psych|senior|Tox/i.test(s.replace(/^NAP\b/i, ""))) return { rotation: "NAP", flags };
+
+  // Night Float — any label that resolves primarily to night coverage
+  if (/^Night Float/i.test(s) ||
+      /^(Night|Nights)\/(Tox|ID|Ortho|ENT|Rheum|Palliative|A\/I)/i.test(s) ||
+      /^(ENT|BMT|Ortho|Ophtho|Palliative|Rad|Advo|Derm\s+Tox|GI|Adv GI)\s*\/\s*Nights?$/i.test(s) ||
+      /^Split Night Block/i.test(s) ||
+      /\/ Nights?$|\/ Night$/i.test(s) ||
+      /^GI Night Float/i.test(s) ||
+      /^Night\/ A\/I/i.test(s)) {
+    return { rotation: "Night Float", flags };
+  }
+
+  // Purple
+  if (/^Purple$/i.test(s)) return { rotation: "Purple", flags };
+  if (/^Purple\/Admit|^Admit\/?Orange?\/Purple|^Admit\/Purple/i.test(s)) return { rotation: "Purple/Admit", flags };
+
+  // Orange
+  if (/^Orange$/i.test(s)) return { rotation: "Orange", flags };
+  if (/^(AGP\/Orange|Orange\/AGP)/i.test(s)) return { rotation: "Orange", note: "AGP split", flags: { ...flags, is_split: true } };
+
+  // Gold/NICU (also catches NICU/Gold, Gold alone)
+  if (/^Gold\/NICU$|^NICU\/Gold$|^NICU\/gold$|^Gold\/\s*NICU FMLA|^Gold$/i.test(s)) return { rotation: "Gold/NICU", flags };
+  if (/^Gold\s*\/\s*CCP/i.test(s) || /^CCP\s*\/\s*Gold\b/i.test(s)) return { rotation: "Elective", note: "CCP/Gold", flags };
+
+  // Clinic/Advo
+  if (/^Clinic\/Advo/i.test(s) || /^Chief block/i.test(s)) return { rotation: "Clinic/Advo", flags };
+
+  // Cardiology (all variants)
+  if (/^Cardiology/i.test(s)) return { rotation: "Cardiology", flags };
+
+  // PHO (standalone or PHO *)
+  if (/^PHO\b/i.test(s) && !/Nephro|floor|endo/i.test(s.replace(/^PHO[\s*]*/i, ""))) return { rotation: "PHO", flags };
+
+  // Newborn
+  if (/^Newborn/i.test(s)) return { rotation: "Newborn", flags };
+
+  // Adolescent
+  if (/^Adol/i.test(s)) return { rotation: "Adolescent", flags };
+
+  // PICU
+  if (/^PICU$/i.test(s) || /^Adv PICU/i.test(s)) return { rotation: "PICU", flags };
+
+  // NICU (standalone)
+  if (/^NICU$/i.test(s) || /^Adv NICU/i.test(s)) return { rotation: "NICU", flags };
+  if (/^NICU\/PICU$|^PICU\/NICU$/i.test(s)) return { rotation: "PICU", flags };
+
+  // ED (standalone)
+  if (/^ED$/i.test(s)) return { rotation: "ED", flags };
+
+  // RAT (standalone)
+  if (/^RAT\b/i.test(s) && !/NICU|ED/i.test(s.replace(/^RAT\b/i, ""))) return { rotation: "RAT", flags };
+
+  // Research
+  if (/^Research/i.test(s)) return { rotation: "Research", flags };
+
+  // Board Review
+  if (/^Board review/i.test(s)) return { rotation: "Board Review", flags };
+
+  // Vacation
+  if (/^Vacation$/i.test(s)) return { rotation: "Vacation", flags };
+
+  // PCE → Elective
+  if (/^PCE[\s\-\/]/i.test(s) || /^PCE$/i.test(s)) return { rotation: "Elective", note: text, flags };
+
+  // BWH → Elective (Bowen rotations)
+  if (/^BWH /i.test(s)) return { rotation: "Elective", note: text, flags };
+
+  // HDVCH → Elective
+  if (/^HDVCH/i.test(s)) return { rotation: "Elective", note: text, flags };
+
+  // MFB → Elective
+  if (/^MFB/i.test(s)) return { rotation: "Elective", note: text, flags };
+
+  // AMB MED PEDS → Elective
+  if (/^AMB MED PEDS/i.test(s)) return { rotation: "Elective", note: text, flags };
+
+  // DevBeh → Elective
+  if (/^DevBeh/i.test(s)) return { rotation: "Elective", note: "DevBeh", flags };
+
+  // GI (non-night) → Elective
+  if (/^GI\b/i.test(s)) return { rotation: "Elective", note: "GI", flags };
+
+  // Endo → Elective
+  if (/^Endo\b/i.test(s)) return { rotation: "Elective", note: "Endo", flags };
+
+  // Neuro → Elective
+  if (/^Neuro\b|^NeuroDev|^Neurology/i.test(s)) return { rotation: "Elective", note: "Neuro", flags };
+
+  // Pulm → Elective
+  if (/^Pulm\b/i.test(s)) return { rotation: "Elective", note: "Pulm", flags };
+
+  // A&I / A/I → Elective
+  if (/^A[&\/]I\b/i.test(s)) return { rotation: "Elective", note: "A&I", flags };
+
+  // CCP → Elective
+  if (/^CCP\b/i.test(s)) return { rotation: "Elective", note: "CCP", flags };
+
+  // Elective direct
+  if (/^Elective$/i.test(s)) return { rotation: "Elective", flags };
+
+  // Catch-all
+  return { rotation: "Elective", note: text, flags };
+}
+
+function parseChiefMasterSchedule(workbook) {
+  const sheets = workbook.SheetNames;
+  const notes = [];
+  let residents = [], assignments = [];
+
+  const hasWide = sheets.includes("MasterSchedule_Wide");
+  const hasLong = sheets.includes("MasterSchedule");
+  const hasPgy = sheets.some((s) => /^PGY[123]$|^MedPeds$/i.test(s));
+
+  if (hasWide) {
+    const result = _parseMasterWide(workbook.Sheets["MasterSchedule_Wide"], workbook.Sheets["Residents"]);
+    residents = result.residents; assignments = result.assignments;
+    notes.push(`Detected wide-format workbook (MasterSchedule_Wide).`);
+  } else if (hasLong) {
+    const result = _parseMasterLong(workbook.Sheets["MasterSchedule"]);
+    residents = result.residents; assignments = result.assignments;
+    notes.push(`Detected long-format workbook (MasterSchedule).`);
+  } else if (hasPgy) {
+    const result = _parsePgySheets(workbook);
+    residents = result.residents; assignments = result.assignments;
+    notes.push(`Detected chief workbook (PGY1/PGY2/PGY3/MedPeds sheets).`);
+  } else {
+    throw new Error("Unrecognized format. Expected PGY1/PGY2/PGY3 sheets, MasterSchedule, or MasterSchedule_Wide.");
+  }
+
+  const cnt = (pgy) => residents.filter((r) => r.pgy === pgy).length;
+  return {
+    residents, assignments, notes,
+    pgy1Count: cnt("PGY-1"), pgy2Count: cnt("PGY-2"),
+    pgy3Count: cnt("PGY-3"), mpCount: cnt("MedPeds")
+  };
+}
+
+function _parseMasterWide(ws, residentWs) {
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  const headerIdx = Math.max(0, data.findIndex((r) => /Resident_ID|Display_Name/i.test(String(r[0] || r[1]))));
+  const header = data[headerIdx] || [];
+
+  // Map block columns (columns 3+ that match "Block N" pattern)
+  const blockCols = [];
+  for (let c = 3; c < header.length; c++) {
+    if (/Block\s*\d+/i.test(String(header[c]))) blockCols.push(c);
+  }
+  if (blockCols.length === 0) for (let c = 3; c <= 15; c++) blockCols.push(c);
+
+  const profileMap = {};
+  if (residentWs) {
+    const rdata = XLSX.utils.sheet_to_json(residentWs, { header: 1, defval: "" });
+    const rh = rdata.findIndex((r) => /Resident_ID/i.test(String(r[0])));
+    if (rh >= 0) rdata.slice(rh + 1).filter((r) => r[0]).forEach((r) => {
+      profileMap[String(r[0]).trim()] = { name: String(r[1]).trim(), pgy: String(r[2]).trim(), institution: String(r[3]).trim() };
+    });
+  }
+
+  const residents = [], assignments = [];
+  data.slice(headerIdx + 1).filter((r) => r[0] && !/^#|^total|^desc/i.test(String(r[0]))).forEach((row) => {
+    const id = String(row[0]).trim();
+    const profile = profileMap[id] || {};
+    const name = profile.name || String(row[1]).trim();
+    const pgy = profile.pgy || String(row[2]).trim();
+    if (!name) return;
+    residents.push({ id, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: profile.institution || "Corewell Health", requirements: {} });
+    assignments.push(Array.from({ length: 13 }, (_, b) => {
+      const raw = String(row[blockCols[b]] ?? "").trim();
+      const { rotation, note, flags } = normalizeRotation(raw || "Elective");
+      return { rotation, raw, note: note || "", locked: false, ...flags };
+    }));
+  });
+  return { residents, assignments };
+}
+
+function _parseMasterLong(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  const headerIdx = Math.max(0, data.findIndex((r) => /Resident_ID/i.test(String(r[0]))));
+  const resMap = new Map();
+  data.slice(headerIdx + 1).filter((r) => r[0]).forEach((row) => {
+    const id = String(row[0]).trim();
+    const name = String(row[1]).trim();
+    const pgy = String(row[2]).trim();
+    const blockNum = parseInt(String(row[3]).replace(/\D/g, ""), 10) - 1;
+    const rawLabel = String(row[6] || row[5] || "").trim();
+    if (!resMap.has(id)) resMap.set(id, {
+      resident: { id, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: "Corewell Health", requirements: {} },
+      blocks: Array.from({ length: 13 }, () => ({ rotation: "Elective", raw: "", note: "", locked: false }))
+    });
+    if (blockNum >= 0 && blockNum < 13) {
+      const { rotation, note, flags } = normalizeRotation(rawLabel || String(row[5]).trim() || "Elective");
+      resMap.get(id).blocks[blockNum] = { rotation, raw: rawLabel, note: note || "", locked: false, ...flags };
+    }
+  });
+  const residents = [], assignments = [];
+  resMap.forEach(({ resident, blocks }) => { residents.push(resident); assignments.push(blocks); });
+  return { residents, assignments };
+}
+
+function _parsePgySheets(workbook) {
+  const pgyConfig = [
+    { sheet: "PGY1", pgy: "PGY-1" }, { sheet: "PGY2", pgy: "PGY-2" },
+    { sheet: "PGY3", pgy: "PGY-3" }, { sheet: "MedPeds", pgy: "MedPeds" }
+  ];
+  const residents = [], assignments = [];
+  pgyConfig.forEach(({ sheet: sheetName, pgy }) => {
+    const ws = workbook.Sheets[sheetName];
+    if (!ws) return;
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+    // Find block header row
+    let blockRow = data.findIndex((r) => r.some((c) => /Block\s*1|Jul/i.test(String(c))));
+    if (blockRow < 0) blockRow = 1;
+
+    // Find block column indices
+    const hdr = data[blockRow] || [];
+    let blockCols = [];
+    hdr.forEach((cell, ci) => { if (/Block\s*\d+|Jul|Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun/i.test(String(cell))) blockCols.push(ci); });
+    if (blockCols.length < 13) { blockCols = []; for (let c = 1; c <= 13; c++) blockCols.push(c); }
+
+    data.slice(blockRow + 1).forEach((row) => {
+      const nameRaw = String(row[0] || "").trim();
+      if (!nameRaw || /^25\/26|^ORANGE|^PURPLE|^Total|^Block|^\d+$/i.test(nameRaw)) return;
+      // "Last, First" → "First Last"
+      const name = /,/.test(nameRaw) && !/ \(/.test(nameRaw)
+        ? nameRaw.split(",").map((p) => p.trim()).reverse().join(" ")
+        : nameRaw;
+      residents.push({ id: `imp-${residents.length}`, name, pgy, track: pgy === "MedPeds" ? "Med-Peds" : "Pediatrics", institution: "Corewell Health", requirements: {} });
+      assignments.push(Array.from({ length: 13 }, (_, b) => {
+        const raw = String(row[blockCols[b]] ?? "").trim();
+        const { rotation, note, flags } = normalizeRotation(raw || "Elective");
+        return { rotation, raw, note: note || "", locked: false, ...flags };
+      }));
+    });
+  });
+  return { residents, assignments };
+}
+
 function applyImportedMasterPrototype() {
   masterImportState.status = "applied";
   masterImportState.mode = "import";
@@ -3942,25 +4200,44 @@ function bindViewActions() {
   app.querySelectorAll(".master-import-file").forEach((input) => input.addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (typeof XLSX === "undefined") {
+      showToast("Parser not ready", "SheetJS library failed to load. Check your internet connection and reload.");
+      return;
+    }
     const extension = file.name.split(".").pop()?.toUpperCase() || "FILE";
-    masterImportState = {
-      ...masterImportState,
-      mode: "import",
-      status: "staged",
-      fileName: file.name,
-      fileType: extension,
-      uploadedAt: new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
-      mappedRows: masterRowsForPgy(activeMasterPgy).length,
-      mappedBlocks: academicBlocks.length,
-      notes: [
-        "Resident rows will match profile names.",
-        "Block columns will become annual master rotations.",
-        "Elective/vacation cells will feed call pool eligibility."
-      ]
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const result = parseChiefMasterSchedule(wb);
+        masterResidents.splice(0, masterResidents.length, ...result.residents);
+        masterAssignments = result.assignments;
+        result.residents.forEach((r) => ensureResidentActivityRecord(r.name));
+        masterImportState = {
+          ...masterImportState,
+          mode: "import",
+          status: "applied",
+          fileName: file.name,
+          fileType: extension,
+          uploadedAt: new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+          mappedRows: result.residents.length,
+          mappedBlocks: 13,
+          detectedSheets: wb.SheetNames.slice(0, 6),
+          notes: result.notes
+        };
+        persistAppState();
+        navigate("master");
+        render();
+        showToast(
+          `Imported ${result.residents.length} residents`,
+          `${result.pgy1Count} PGY-1 · ${result.pgy2Count} PGY-2 · ${result.pgy3Count} PGY-3 · ${result.mpCount} Med-Peds. ${result.residents.length * 13} blocks mapped.`
+        );
+      } catch (err) {
+        console.error("Master import error:", err);
+        showToast("Import failed", err.message || "Could not parse the file. Check the console for details.");
+      }
     };
-    persistAppState();
-    render();
-    showToast("Master file staged", "Review the detected mapping, then apply it to make it the active source.");
+    reader.readAsArrayBuffer(file);
   }));
   app.querySelectorAll(".apply-master-import").forEach((button) => button.addEventListener("click", () => {
     applyImportedMasterPrototype();
