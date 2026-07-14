@@ -1,3 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ── Design Tokens ─────────────────────────────────────────── */
+:root {
+  --bg: #F8FAFC;
+  --panel: #FFFFFF;
+  --sidebar: #1E2139;
+  --accent: #6366F1;
+  --accent-hover: #4F46E5;
+  --border: #E2E8F0;
+  --border-light: #F1F5F9;
+  --text: #1E293B;
+  --text-secondary: #64748B;
+  --text-muted: #94A3B8;
+  --danger: #EF4444;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --radius: 7px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+
+/* ── Base ──────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+body { font-family: 'Inter', system-ui, -apple-system, sans-serif !important; background: var(--bg) !important; }
+
+/* ── Sidebar ───────────────────────────────────────────────── */
+.sidebar { background: var(--sidebar) !important; }
+.nav-item { border-radius: 6px !important; transition: all .15s !important; }
+.nav-item.active { background: rgba(99,102,241,0.18) !important; color: #fff !important; }
+.nav-item:hover { background: rgba(255,255,255,0.06) !important; }
+
+/* ── Buttons ───────────────────────────────────────────────── */
+.primary-button { background: var(--accent) !important; border-radius: var(--radius) !important; font-family: 'Inter', system-ui !important; }
+.primary-button:hover { background: var(--accent-hover) !important; }
+.secondary-button { border-radius: var(--radius) !important; font-family: 'Inter', system-ui !important; }
+
+/* ── Cards & Panels ────────────────────────────────────────── */
+.card, .panel { border-radius: 10px !important; border: 1px solid var(--border) !important; box-shadow: var(--shadow) !important; }
+
+/* ── Inputs ────────────────────────────────────────────────── */
+.filter-select, .input { border-radius: var(--radius) !important; border: 1px solid #D1D5DB !important; font-family: 'Inter', system-ui !important; }
+.filter-select:focus, .input:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.1) !important; }
+
+/* ── Rotation Chips ────────────────────────────────────────── */
+.rotation-chip, .master-cell-pill { border-radius: 5px !important; font-size: 11px !important; font-weight: 500 !important; padding: 3px 9px !important; }
+
+/* ── Schedule Grid ─────────────────────────────────────────── */
+.shift-cell { border-radius: 6px !important; }
+.shift-cell.day { background: #EFF6FF !important; color: #1D4ED8 !important; }
+.shift-cell.night { background: #EDE9FE !important; color: #5B21B6 !important; }
+.shift-cell.protected { background: #FFFBEB !important; color: #92400E !important; }
+.shift-cell.off { background: #F8FAFC !important; color: #94A3B8 !important; }
+
 :root {
   /* Enterprise design system */
   --bg: #F4F5F7;
