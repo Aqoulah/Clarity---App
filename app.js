@@ -4422,16 +4422,17 @@ function configureNavigation(portal) {
       <button class="nav-item" data-view="resident-requests"><span class="icon" data-icon="clock"></span><span>PTO & sick leave</span></button>`;
   } else {
     nav.innerHTML = `
-      <p class="nav-label">Workspace</p>
+      <p class="nav-label">Chief portal</p>
       <button class="nav-item ${currentView==="dashboard"?"active":""}" data-view="dashboard"><span class="icon" data-icon="home"></span><span>Overview</span></button>
       <button class="nav-item ${currentView==="builder"?"active":""}" data-view="builder"><span class="icon" data-icon="wand"></span><span>Schedule builder</span><span class="nav-badge">${residentRequests.filter(request=>request.status==="pending").length}</span></button>
-      <button class="nav-item ${currentView==="schedule"?"active":""}" data-view="schedule"><span class="icon" data-icon="calendar"></span><span>Schedules</span></button>
-      <button class="nav-item ${currentView==="analytics"?"active":""}" data-view="analytics"><span class="icon" data-icon="chart"></span><span>Analytics</span></button>
       <button class="nav-item ${currentView==="master"?"active":""}" data-view="master"><span class="icon" data-icon="grid"></span><span>Master schedule</span></button>
+      <button class="nav-item ${currentView==="schedule"?"active":""}" data-view="schedule"><span class="icon" data-icon="calendar"></span><span>Service schedules</span></button>
+      <p class="nav-label">Operations</p>
       <button class="nav-item ${currentView==="attendance"?"active":""}" data-view="attendance"><span class="icon" data-icon="clipboard"></span><span>Attendance</span><span class="nav-badge">${attendanceSessionById()?.status==="Open"?"Live":"✓"}</span></button>
-      <p class="nav-label">People & rules</p>
       <button class="nav-item ${currentView==="residents"?"active":""}" data-view="residents"><span class="icon" data-icon="users"></span><span>Residents & approvals</span><span class="nav-badge">${residentRequests.filter(request=>request.status==="pending").length + callSwitchOffers.filter(offer=>offer.status==="chief-review").length}</span></button>
-      <button class="nav-item ${currentView==="rules"?"active":""}" data-view="rules"><span class="icon" data-icon="settings"></span><span>Institution rules</span></button>`;
+      <p class="nav-label">Insights</p>
+      <button class="nav-item ${currentView==="analytics"?"active":""}" data-view="analytics"><span class="icon" data-icon="chart"></span><span>Analytics</span></button>
+      <button class="nav-item ${currentView==="rules"?"active":""}" data-view="rules"><span class="icon" data-icon="settings"></span><span>Configuration</span></button>`;
   }
   hydrateIcons(nav);
 }

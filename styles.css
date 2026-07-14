@@ -2131,3 +2131,49 @@ h3 { font-size: 13px; font-weight: 600; }
 /* ── Import dropzone ───────────────────────────────────── */
 .import-dropzone-compact { border: 2px dashed #D1D5DB; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; color: #6B7280; font-size: 13px; display: block; }
 .import-dropzone-compact:hover { border-color: #6366F1; color: #6366F1; background: #F5F3FF; }
+
+
+/* =========================================================
+   CLARITY REDESIGN — Step 1: design system refresh
+   (Inter type, indigo/slate palette, pastel pill tokens)
+   Appended override block — safe to edit or remove as a unit.
+   ========================================================= */
+:root{
+  --canvas:#f5f6f8; --card:#ffffff; --line:#e8eaee;
+  --ink:#1f2430; --muted:#727a8a; --subtle:#9aa1b0;
+  --primary:#4c40a6; --primary-dark:#3d3390; --primary-soft:#ece9fb;
+  --radius:20px;
+  --shadow:0 1px 2px rgba(31,36,58,.04), 0 8px 24px rgba(31,36,58,.05);
+  --font-body:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pill-purple-bg:#ede9fb; --pill-purple-tx:#6152c4;
+  --pill-violet-bg:#f0e9fb; --pill-violet-tx:#8557bf;
+  --pill-orange-bg:#fbe8d4; --pill-orange-tx:#bd722a;
+  --pill-green-bg:#e2f1e7;  --pill-green-tx:#3f875c;
+  --pill-blue-bg:#e6eef9;   --pill-blue-tx:#5578ad;
+  --pill-gold-bg:#fbf0cf;   --pill-gold-tx:#a4801f;
+}
+body{font-family:var(--font-body);-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:var(--font-display);letter-spacing:-.02em}
+
+.sidebar-support{display:none}
+
+.nav-label{font-size:10.5px;font-weight:700;letter-spacing:.11em;color:var(--subtle);margin:20px 12px 8px;text-transform:uppercase}
+.nav-item{border-radius:11px;padding:9px 11px;margin:2px 0;font-size:13.5px;font-weight:500;color:#5c6373;gap:12px}
+.nav-item .icon{color:#9aa1b0}
+.nav-item:hover{background:#f5f5fa;color:var(--ink)}
+.nav-item:hover .icon{color:#7b8294}
+.nav-item.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav-item.active .icon{color:var(--primary)}
+.nav-badge{background:#eef0f3;color:#818899}
+.nav-item.active .nav-badge{background:#fff;color:var(--primary)}
+
+.sidebar-user{border-top:0}
+.avatar-chief{background:linear-gradient(135deg,#4c40a6,#6a4fb8);color:#fff}
+
+.p-purple{background:var(--pill-purple-bg);color:var(--pill-purple-tx)}
+.p-violet{background:var(--pill-violet-bg);color:var(--pill-violet-tx)}
+.p-orange{background:var(--pill-orange-bg);color:var(--pill-orange-tx)}
+.p-green{background:var(--pill-green-bg);color:var(--pill-green-tx)}
+.p-blue{background:var(--pill-blue-bg);color:var(--pill-blue-tx)}
+.p-gold{background:var(--pill-gold-bg);color:var(--pill-gold-tx)}
